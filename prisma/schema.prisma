@@ -1,0 +1,66 @@
+generator client {
+  provider = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+/// No seller accounts in this demo — every product belongs to the single
+/// implicit seller. streamId is set while the product is pinned to a live
+/// stream, cleared when the stream ends.
+model Product {
+  id             String   @id @default(auto()) @map("_id") @db.ObjectId
+  title          String
+  priceInPaise   Int
+  availableStock Int
+  imageUrl       String?
+  streamId       String?  @db.ObjectId
+  createdAt      DateTime @default(now())
+}
+
+/// One live broadcast. broadcastSecret is minted on start and handed only to
+/// the creator (kept in their browser's localStorage) — it's the only thing
+/// that tells the token endpoint "this caller is the broadcaster", since
+/// there's no auth to check a seller id against.
+model Stream {
+  id              String       @id @default(auto()) @map("_id") @db.ObjectId
+  livekitRoomName String       @unique
+  broadcastSecret String
+  status          StreamStatus @default(LIVE)
+  title           String?
+  thumbnailUrl    String?
+  startedAt       DateTime     @default(now())
+  endedAt         DateTime?
+}
+
+enum StreamStatus {
+  LIVE
+  ENDED
+}
+
+/// A placed Cash-on-Delivery order. No accounts, so buyer contact + address
+/// are captured free-form at checkout instead of pulled from a saved profile.
+model Order {
+  id                 String   @id @default(auto()) @map("_id") @db.ObjectId
+  productId          String   @db.ObjectId
+  streamId           String   @db.ObjectId
+  productTitle       String
+  quantity           Int      @default(1)
+  itemsInPaise       Int
+  deliveryFeeInPaise Int
+  amountInPaise      Int
+
+  buyerName  String
+  buyerPhone String
+
+  addressLine1 String
+  addressLine2 String?
+  city         String
+  state        String
+  pincode      String
+
+  createdAt DateTime @default(now())
+}

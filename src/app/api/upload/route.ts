@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { NextResponse, type NextRequest } from "next/server";
+import { isSellerRequest } from "@/lib/seller-auth";
 
 // Client downscales to ~960px JPEG before upload; 3MB is generous headroom.
 const MAX_BYTES = 3 * 1024 * 1024;
@@ -16,8 +17,13 @@ const EXT_BY_MIME: Record<string, string> = {
  * POST /api/upload — local-disk image upload, used as the fallback when
  * ImageKit isn't configured. Extension derives from the MIME type, never the
  * client filename; names are random so nothing is guessable/overwritable.
+ * Seller-only — the only uploader in this app is the product-photo form.
  */
 export async function POST(req: NextRequest) {
+  if (!isSellerRequest(req)) {
+    return NextResponse.json({ error: "Not authorized." }, { status: 401 });
+  }
+
   const formData = await req.formData();
   const file = formData.get("file");
   if (!(file instanceof File)) {

@@ -1,9 +1,14 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { deleteRoom } from "@/lib/livekit";
+import { isSellerRequest } from "@/lib/seller-auth";
 
 /** POST /api/stream/end { streamId, broadcastSecret } */
 export async function POST(req: NextRequest) {
+  if (!isSellerRequest(req)) {
+    return NextResponse.json({ error: "Not authorized." }, { status: 401 });
+  }
+
   let body: Record<string, unknown>;
   try {
     body = await req.json();

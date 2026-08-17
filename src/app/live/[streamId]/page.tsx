@@ -22,7 +22,7 @@ export default async function LiveStreamPage({
           Check the Discover page for sellers who are live right now.
         </p>
         <Link
-          href="/discover"
+          href="/"
           className="mt-2 rounded-full bg-primary px-6 py-2.5 text-sm font-medium text-white hover:bg-primary-hover"
         >
           Browse live streams

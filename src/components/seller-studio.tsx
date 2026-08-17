@@ -37,7 +37,106 @@ function loadStoredBroadcast(): { streamId: string; secret: string } | null {
   return null;
 }
 
+type AuthPhase = "checking" | "locked" | "unlocked";
+
+/**
+ * Password gate wrapping the whole studio. This page also lives at an
+ * unlinked URL, but the URL is only obscurity — every seller-only API route
+ * independently checks the session cookie this gate sets, so the real
+ * protection is the password, not the hidden path.
+ */
 export function SellerStudio() {
+  const [authPhase, setAuthPhase] = useState<AuthPhase>("checking");
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch("/api/seller/session");
+        const body = await res.json();
+        setAuthPhase(body.authenticated ? "unlocked" : "locked");
+      } catch {
+        setAuthPhase("locked");
+      }
+    })();
+  }, []);
+
+  if (authPhase === "checking") {
+    return <div className="skeleton mx-auto h-64 max-w-sm" />;
+  }
+
+  if (authPhase === "locked") {
+    return <PasswordGate onUnlock={() => setAuthPhase("unlocked")} />;
+  }
+
+  return <SellerConsole onLocked={() => setAuthPhase("locked")} />;
+}
+
+function PasswordGate({ onUnlock }: { onUnlock: () => void }) {
+  const [password, setPassword] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    setSubmitting(true);
+    try {
+      const res = await fetch("/api/seller/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        setError(body.error ?? "Wrong password.");
+        return;
+      }
+      onUnlock();
+    } catch {
+      setError("Network error.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="flex min-h-[70vh] items-center justify-center px-4">
+      <form
+        onSubmit={submit}
+        className="w-full max-w-xs rounded-2xl border border-border bg-surface p-6 shadow-pop"
+      >
+        <span className="mb-3 block text-2xl">🔒</span>
+        <h1 className="mb-1 text-lg font-bold tracking-tight">Seller access</h1>
+        <p className="mb-4 text-sm text-muted">Enter the password to continue.</p>
+
+        {error ? (
+          <p className="mb-3 rounded-xl bg-live/10 px-3 py-2 text-sm text-live">
+            {error}
+          </p>
+        ) : null}
+
+        <input
+          type="password"
+          autoFocus
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          placeholder="Password"
+          className="mb-4 w-full rounded-xl border border-border bg-surface-2 px-3 py-2.5 text-sm outline-none focus:border-primary/50"
+        />
+
+        <button
+          type="submit"
+          disabled={submitting || password.length === 0}
+          className="w-full rounded-full bg-primary py-2.5 text-sm font-semibold text-primary-foreground transition-all active:scale-[0.98] disabled:opacity-40"
+        >
+          {submitting ? "Checking…" : "Unlock"}
+        </button>
+      </form>
+    </div>
+  );
+}
+
+function SellerConsole({ onLocked }: { onLocked: () => void }) {
   const [phase, setPhase] = useState<Phase>({ kind: "loading" });
   const [products, setProducts] = useState<Product[] | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -81,6 +180,11 @@ export function SellerStudio() {
       setPhase({ kind: "setup" });
     })();
   }, []);
+
+  async function logout() {
+    await fetch("/api/seller/logout", { method: "POST" });
+    onLocked();
+  }
 
   async function createProduct(e: React.FormEvent) {
     e.preventDefault();
@@ -217,7 +321,16 @@ export function SellerStudio() {
   if (phase.kind === "live") {
     return (
       <div className="mx-auto max-w-lg">
-        <h1 className="mb-1 text-2xl font-bold tracking-tight">You&apos;re live</h1>
+        <div className="mb-1 flex items-center justify-between">
+          <h1 className="text-2xl font-bold tracking-tight">You&apos;re live</h1>
+          <button
+            type="button"
+            onClick={logout}
+            className="text-xs font-medium text-muted transition-colors hover:text-foreground"
+          >
+            Lock
+          </button>
+        </div>
         <p className="mb-4 text-sm text-muted">
           Buyers can find your stream on Discover.
         </p>
@@ -241,7 +354,16 @@ export function SellerStudio() {
   // ---- setup phase ----
   return (
     <div className="animate-page-in mx-auto max-w-lg">
-      <h1 className="mb-1 text-2xl font-bold tracking-tight">Go live</h1>
+      <div className="mb-1 flex items-center justify-between">
+        <h1 className="text-2xl font-bold tracking-tight">Go live</h1>
+        <button
+          type="button"
+          onClick={logout}
+          className="text-xs font-medium text-muted transition-colors hover:text-foreground"
+        >
+          Lock
+        </button>
+      </div>
       <p className="mb-6 text-sm text-muted">
         Add products, pick what you&apos;re selling, then start your broadcast.
       </p>

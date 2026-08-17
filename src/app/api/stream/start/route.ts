@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { NextResponse, type NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { isSellerRequest } from "@/lib/seller-auth";
 
 function sanitizeImageUrl(value: unknown): string | null {
   if (typeof value !== "string" || value.length === 0) return null;
@@ -19,6 +20,10 @@ function sanitizeImageUrl(value: unknown): string | null {
  * and pass it back to /api/livekit-token and /api/stream/end.
  */
 export async function POST(req: NextRequest) {
+  if (!isSellerRequest(req)) {
+    return NextResponse.json({ error: "Not authorized." }, { status: 401 });
+  }
+
   const existing = await prisma.stream.findFirst({ where: { status: "LIVE" } });
   if (existing) {
     return NextResponse.json(

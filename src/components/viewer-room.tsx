@@ -149,7 +149,7 @@ function ViewerStage({
         <h2 className="text-lg font-semibold text-white">Stream ended</h2>
         <p className="text-sm text-white/60">Find more sellers on Discover.</p>
         <Link
-          href="/discover"
+          href="/"
           className="mt-1 rounded-full bg-primary px-6 py-2.5 text-sm font-medium text-white transition-all active:scale-[0.97]"
         >
           Browse live streams
@@ -183,7 +183,7 @@ function ViewerStage({
           <Elapsed startedAt={startedAt} />
         </div>
         <Link
-          href="/discover"
+          href="/"
           aria-label="Leave stream"
           className="pointer-events-auto flex h-8 w-8 items-center justify-center rounded-full bg-black/60 text-white backdrop-blur transition-all duration-200 active:scale-90"
         >

@@ -17,11 +17,16 @@ type Product = {
   imageUrl: string | null;
 };
 
+type Category = { id: string; name: string };
+
 type Phase =
   | { kind: "loading" }
   | { kind: "setup" }
   | { kind: "blocked" } // someone else's stream is live, we hold no secret for it
   | { kind: "live"; streamId: string; secret: string; startedAt: string };
+
+/** The go-live funnel's order: pick products, then a category, then confirm. */
+type FunnelStep = "products" | "category" | "review";
 
 function loadStoredBroadcast(): { streamId: string; secret: string } | null {
   try {
@@ -40,9 +45,9 @@ function loadStoredBroadcast(): { streamId: string; secret: string } | null {
 type AuthPhase = "checking" | "locked" | "unlocked";
 
 /**
- * Password gate wrapping the whole studio. This page also lives at an
- * unlinked URL, but the URL is only obscurity — every seller-only API route
- * independently checks the session cookie this gate sets, so the real
+ * Password gate wrapping the whole studio. The page also lives at an
+ * unlinked-by-default URL, but that's only obscurity — every seller-only API
+ * route independently checks the session cookie this gate sets, so the real
  * protection is the password, not the hidden path.
  */
 export function SellerStudio() {
@@ -136,10 +141,30 @@ function PasswordGate({ onUnlock }: { onUnlock: () => void }) {
   );
 }
 
+function StepDots({ step }: { step: FunnelStep }) {
+  const steps: FunnelStep[] = ["products", "category", "review"];
+  return (
+    <div className="mb-4 flex items-center gap-1.5">
+      {steps.map((s) => (
+        <span
+          key={s}
+          className={cn(
+            "h-1.5 flex-1 rounded-full transition-colors",
+            steps.indexOf(s) <= steps.indexOf(step) ? "bg-primary" : "bg-surface-2",
+          )}
+        />
+      ))}
+    </div>
+  );
+}
+
 function SellerConsole({ onLocked }: { onLocked: () => void }) {
   const [phase, setPhase] = useState<Phase>({ kind: "loading" });
+  const [step, setStep] = useState<FunnelStep>("products");
   const [products, setProducts] = useState<Product[] | null>(null);
+  const [categories, setCategories] = useState<Category[] | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [categoryId, setCategoryId] = useState<string | null>(null);
   const [streamTitle, setStreamTitle] = useState("");
   const [starting, setStarting] = useState(false);
   const [ending, setEnding] = useState(false);
@@ -156,6 +181,12 @@ function SellerConsole({ onLocked }: { onLocked: () => void }) {
     const res = await fetch("/api/products");
     const body = await res.json();
     setProducts(body.products ?? []);
+  }
+
+  async function loadCategories() {
+    const res = await fetch("/api/categories");
+    const body = await res.json();
+    setCategories(body.categories ?? []);
   }
 
   useEffect(() => {
@@ -176,7 +207,7 @@ function SellerConsole({ onLocked }: { onLocked: () => void }) {
         setPhase({ kind: "blocked" });
         return;
       }
-      await loadProducts();
+      await Promise.all([loadProducts(), loadCategories()]);
       setPhase({ kind: "setup" });
     })();
   }, []);
@@ -251,6 +282,10 @@ function SellerConsole({ onLocked }: { onLocked: () => void }) {
       setError("Pick at least one product to feature.");
       return;
     }
+    if (!categoryId) {
+      setError("Pick a category for your stream.");
+      return;
+    }
     setStarting(true);
     try {
       const res = await fetch("/api/stream/start", {
@@ -258,6 +293,7 @@ function SellerConsole({ onLocked }: { onLocked: () => void }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           productIds: [...selected],
+          categoryId,
           title: streamTitle,
         }),
       });
@@ -295,8 +331,10 @@ function SellerConsole({ onLocked }: { onLocked: () => void }) {
       });
       localStorage.removeItem(STORAGE_KEY);
       setSelected(new Set());
+      setCategoryId(null);
       setStreamTitle("");
-      await loadProducts();
+      setStep("products");
+      await Promise.all([loadProducts(), loadCategories()]);
       setPhase({ kind: "setup" });
     } finally {
       setEnding(false);
@@ -351,7 +389,10 @@ function SellerConsole({ onLocked }: { onLocked: () => void }) {
     );
   }
 
-  // ---- setup phase ----
+  // ---- setup phase: products -> category -> review ----
+  const selectedProducts = products?.filter((p) => selected.has(p.id)) ?? [];
+  const selectedCategory = categories?.find((c) => c.id === categoryId) ?? null;
+
   return (
     <div className="animate-page-in mx-auto max-w-lg">
       <div className="mb-1 flex items-center justify-between">
@@ -364,9 +405,15 @@ function SellerConsole({ onLocked }: { onLocked: () => void }) {
           Lock
         </button>
       </div>
-      <p className="mb-6 text-sm text-muted">
-        Add products, pick what you&apos;re selling, then start your broadcast.
+      <p className="mb-4 text-sm text-muted">
+        {step === "products"
+          ? "Step 1 — add products, pick what you're selling."
+          : step === "category"
+            ? "Step 2 — choose a category for the stream."
+            : "Step 3 — review and go live."}
       </p>
+
+      <StepDots step={step} />
 
       {error ? (
         <p className="mb-4 rounded-xl bg-live/10 px-3 py-2 text-sm text-live">
@@ -374,120 +421,214 @@ function SellerConsole({ onLocked }: { onLocked: () => void }) {
         </p>
       ) : null}
 
-      {/* Add product */}
-      <form
-        onSubmit={createProduct}
-        className="mb-6 space-y-3 rounded-2xl border border-border bg-surface p-4"
-      >
-        <h2 className="text-sm font-semibold">Add a product</h2>
-        <ImageUploader value={newImage} onChange={setNewImage} label="Photo" />
-        <input
-          type="text"
-          value={newTitle}
-          onChange={(e) => setNewTitle(e.target.value)}
-          placeholder="Product title"
-          className="w-full rounded-xl border border-border bg-surface-2 px-3 py-2.5 text-sm outline-none focus:border-primary/50"
-        />
-        <div className="flex gap-3">
-          <input
-            type="number"
-            inputMode="decimal"
-            min={1}
-            value={newPrice}
-            onChange={(e) => setNewPrice(e.target.value)}
-            placeholder="Price (₹)"
-            className="w-1/2 rounded-xl border border-border bg-surface-2 px-3 py-2.5 text-sm outline-none focus:border-primary/50"
-          />
-          <input
-            type="number"
-            inputMode="numeric"
-            min={0}
-            value={newStock}
-            onChange={(e) => setNewStock(e.target.value)}
-            placeholder="Stock"
-            className="w-1/2 rounded-xl border border-border bg-surface-2 px-3 py-2.5 text-sm outline-none focus:border-primary/50"
-          />
-        </div>
-        <button
-          type="submit"
-          disabled={creating}
-          className="w-full rounded-full bg-surface-2 py-2.5 text-sm font-semibold transition-all active:scale-[0.98] disabled:opacity-50"
-        >
-          {creating ? "Adding…" : "+ Add product"}
-        </button>
-      </form>
-
-      {/* Product picker */}
-      <h2 className="mb-2 text-sm font-semibold">
-        Pick products for this stream
-      </h2>
-      {products === null ? (
-        <div className="space-y-2">
-          <div className="skeleton h-16" />
-          <div className="skeleton h-16" />
-        </div>
-      ) : products.length === 0 ? (
-        <p className="mb-4 rounded-2xl border border-dashed border-border p-4 text-center text-sm text-muted">
-          Add your first product above.
-        </p>
-      ) : (
-        <div className="mb-4 space-y-2">
-          {products.map((p) => (
+      {step === "products" ? (
+        <>
+          {/* Add product */}
+          <form
+            onSubmit={createProduct}
+            className="mb-6 space-y-3 rounded-2xl border border-border bg-surface p-4"
+          >
+            <h2 className="text-sm font-semibold">Add a product</h2>
+            <ImageUploader value={newImage} onChange={setNewImage} label="Photo" />
+            <input
+              type="text"
+              value={newTitle}
+              onChange={(e) => setNewTitle(e.target.value)}
+              placeholder="Product title"
+              className="w-full rounded-xl border border-border bg-surface-2 px-3 py-2.5 text-sm outline-none focus:border-primary/50"
+            />
+            <div className="flex gap-3">
+              <input
+                type="number"
+                inputMode="decimal"
+                min={1}
+                value={newPrice}
+                onChange={(e) => setNewPrice(e.target.value)}
+                placeholder="Price (₹)"
+                className="w-1/2 rounded-xl border border-border bg-surface-2 px-3 py-2.5 text-sm outline-none focus:border-primary/50"
+              />
+              <input
+                type="number"
+                inputMode="numeric"
+                min={0}
+                value={newStock}
+                onChange={(e) => setNewStock(e.target.value)}
+                placeholder="Stock"
+                className="w-1/2 rounded-xl border border-border bg-surface-2 px-3 py-2.5 text-sm outline-none focus:border-primary/50"
+              />
+            </div>
             <button
-              key={p.id}
-              type="button"
-              onClick={() => toggleSelected(p.id)}
-              className={cn(
-                "flex w-full items-center gap-3 rounded-2xl border p-3 text-left transition-all duration-200 active:scale-[0.99]",
-                selected.has(p.id)
-                  ? "border-primary/60 bg-primary/5"
-                  : "border-border bg-surface",
-              )}
+              type="submit"
+              disabled={creating}
+              className="w-full rounded-full bg-surface-2 py-2.5 text-sm font-semibold transition-all active:scale-[0.98] disabled:opacity-50"
             >
-              <span className="relative h-12 w-12 shrink-0 overflow-hidden rounded-xl bg-surface-2">
-                {p.imageUrl ? (
-                  <Image src={p.imageUrl} alt={p.title} fill sizes="48px" className="object-cover" />
-                ) : null}
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-sm font-medium">{p.title}</span>
-                <span className="text-xs text-muted">
-                  {formatPrice(p.priceInPaise)} · {p.availableStock} in stock
-                </span>
-              </span>
-              <span
-                className={cn(
-                  "flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2",
-                  selected.has(p.id) ? "border-primary bg-primary" : "border-faint",
-                )}
-              >
-                {selected.has(p.id) ? (
-                  <svg viewBox="0 0 24 24" fill="none" className="h-3 w-3">
-                    <path d="M5 13l4 4L19 7" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
-                ) : null}
-              </span>
+              {creating ? "Adding…" : "+ Add product"}
             </button>
-          ))}
-        </div>
+          </form>
+
+          <h2 className="mb-2 text-sm font-semibold">Pick products for this stream</h2>
+          {products === null ? (
+            <div className="space-y-2">
+              <div className="skeleton h-16" />
+              <div className="skeleton h-16" />
+            </div>
+          ) : products.length === 0 ? (
+            <p className="mb-4 rounded-2xl border border-dashed border-border p-4 text-center text-sm text-muted">
+              Add your first product above.
+            </p>
+          ) : (
+            <div className="mb-4 space-y-2">
+              {products.map((p) => (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => toggleSelected(p.id)}
+                  className={cn(
+                    "flex w-full items-center gap-3 rounded-2xl border p-3 text-left transition-all duration-200 active:scale-[0.99]",
+                    selected.has(p.id)
+                      ? "border-primary/60 bg-primary/5"
+                      : "border-border bg-surface",
+                  )}
+                >
+                  <span className="relative h-12 w-12 shrink-0 overflow-hidden rounded-xl bg-surface-2">
+                    {p.imageUrl ? (
+                      <Image src={p.imageUrl} alt={p.title} fill sizes="48px" className="object-cover" />
+                    ) : null}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm font-medium">{p.title}</span>
+                    <span className="text-xs text-muted">
+                      {formatPrice(p.priceInPaise)} · {p.availableStock} in stock
+                    </span>
+                  </span>
+                  <span
+                    className={cn(
+                      "flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2",
+                      selected.has(p.id) ? "border-primary bg-primary" : "border-faint",
+                    )}
+                  >
+                    {selected.has(p.id) ? (
+                      <svg viewBox="0 0 24 24" fill="none" className="h-3 w-3">
+                        <path d="M5 13l4 4L19 7" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    ) : null}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+
+          <button
+            type="button"
+            disabled={selected.size === 0}
+            onClick={() => {
+              setError(null);
+              setStep("category");
+            }}
+            className="w-full rounded-full bg-primary py-3 text-sm font-semibold text-primary-foreground transition-all active:scale-[0.98] disabled:opacity-40"
+          >
+            Next — choose category
+          </button>
+        </>
+      ) : step === "category" ? (
+        <>
+          <h2 className="mb-2 text-sm font-semibold">Category</h2>
+          {categories === null ? (
+            <div className="space-y-2">
+              <div className="skeleton h-12" />
+              <div className="skeleton h-12" />
+            </div>
+          ) : categories.length === 0 ? (
+            <p className="mb-4 rounded-2xl border border-dashed border-border p-4 text-center text-sm text-muted">
+              No categories configured yet.
+            </p>
+          ) : (
+            <div className="mb-6 space-y-2">
+              {categories.map((c) => (
+                <button
+                  key={c.id}
+                  type="button"
+                  onClick={() => setCategoryId(c.id)}
+                  className={cn(
+                    "flex w-full items-center gap-3 rounded-2xl border p-3 text-left transition-all duration-200 active:scale-[0.99]",
+                    categoryId === c.id
+                      ? "border-primary/60 bg-primary/5"
+                      : "border-border bg-surface",
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "flex h-4 w-4 shrink-0 items-center justify-center rounded-full border-2",
+                      categoryId === c.id ? "border-primary" : "border-faint",
+                    )}
+                  >
+                    {categoryId === c.id ? <span className="h-2 w-2 rounded-full bg-primary" /> : null}
+                  </span>
+                  <span className="text-sm font-medium">{c.name}</span>
+                </button>
+              ))}
+            </div>
+          )}
+
+          <div className="flex gap-2.5">
+            <button
+              type="button"
+              onClick={() => setStep("products")}
+              className="w-1/3 rounded-full border border-border py-3 text-sm font-semibold transition-all hover:bg-surface-2 active:scale-[0.98]"
+            >
+              Back
+            </button>
+            <button
+              type="button"
+              disabled={!categoryId}
+              onClick={() => setStep("review")}
+              className="w-2/3 rounded-full bg-primary py-3 text-sm font-semibold text-primary-foreground transition-all active:scale-[0.98] disabled:opacity-40"
+            >
+              Next — review
+            </button>
+          </div>
+        </>
+      ) : (
+        <>
+          <h2 className="mb-2 text-sm font-semibold">Review</h2>
+          <div className="mb-4 space-y-3 rounded-2xl border border-border bg-surface p-4">
+            <div>
+              <p className="text-xs font-medium text-muted">Products ({selectedProducts.length})</p>
+              <p className="text-sm">{selectedProducts.map((p) => p.title).join(", ")}</p>
+            </div>
+            <div>
+              <p className="text-xs font-medium text-muted">Category</p>
+              <p className="text-sm">{selectedCategory?.name}</p>
+            </div>
+          </div>
+
+          <input
+            type="text"
+            value={streamTitle}
+            onChange={(e) => setStreamTitle(e.target.value)}
+            placeholder="Stream title (optional)"
+            className="mb-4 w-full rounded-xl border border-border bg-surface-2 px-3 py-2.5 text-sm outline-none focus:border-primary/50"
+          />
+
+          <div className="flex gap-2.5">
+            <button
+              type="button"
+              onClick={() => setStep("category")}
+              className="w-1/3 rounded-full border border-border py-3 text-sm font-semibold transition-all hover:bg-surface-2 active:scale-[0.98]"
+            >
+              Back
+            </button>
+            <button
+              type="button"
+              disabled={starting}
+              onClick={goLive}
+              className="w-2/3 rounded-full bg-primary py-3 text-sm font-semibold text-primary-foreground transition-all active:scale-[0.98] disabled:opacity-40"
+            >
+              {starting ? "Starting…" : "Go live"}
+            </button>
+          </div>
+        </>
       )}
-
-      <input
-        type="text"
-        value={streamTitle}
-        onChange={(e) => setStreamTitle(e.target.value)}
-        placeholder="Stream title (optional)"
-        className="mb-4 w-full rounded-xl border border-border bg-surface-2 px-3 py-2.5 text-sm outline-none focus:border-primary/50"
-      />
-
-      <button
-        type="button"
-        disabled={starting || selected.size === 0}
-        onClick={goLive}
-        className="w-full rounded-full bg-primary py-3 text-sm font-semibold text-primary-foreground transition-all active:scale-[0.98] disabled:opacity-40"
-      >
-        {starting ? "Starting…" : "Go live"}
-      </button>
     </div>
   );
 }

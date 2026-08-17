@@ -91,6 +91,15 @@ export default function DiscoverPage() {
           </div>
         )}
       </div>
+
+      <footer className="mx-auto mt-10 max-w-lg text-center">
+        <Link
+          href="/backstage-92k4x7"
+          className="text-xs font-medium text-faint transition-colors hover:text-muted"
+        >
+          Seller? Go live →
+        </Link>
+      </footer>
     </main>
   );
 }

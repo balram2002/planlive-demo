@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { getGuestName } from "@/lib/guest-name";
 
 export type TokenState =
   | { status: "loading" }
@@ -26,6 +27,7 @@ export function useLivekitToken(
       try {
         const qs = new URLSearchParams({ streamId });
         if (secret) qs.set("secret", secret);
+        else qs.set("name", getGuestName());
         const res = await fetch(`/api/livekit-token?${qs.toString()}`);
         const body = await res.json();
         if (cancelled) return;

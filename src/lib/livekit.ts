@@ -39,7 +39,14 @@ export async function createAccessToken(opts: {
     room: opts.roomName,
     roomJoin: true,
     canPublish: opts.canPublish,
-    canPublishData: false,
+    // Everyone — broadcaster and guests alike — can publish data. Chat and
+    // reactions need this; it's safe because the trust boundary that matters
+    // (stock updates, order celebrations, moderation) is enforced elsewhere:
+    // those packets are sent server-side via RoomServiceClient and arrive
+    // with no `from` participant, which a client can never forge, and
+    // moderation packets are only honored client-side when `from` matches
+    // the broadcaster's server-issued identity.
+    canPublishData: true,
     canSubscribe: true,
   });
 

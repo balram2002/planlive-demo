@@ -32,6 +32,7 @@ model Stream {
   status          StreamStatus @default(LIVE)
   title           String?
   thumbnailUrl    String?
+  categoryId      String       @db.ObjectId
   startedAt       DateTime     @default(now())
   endedAt         DateTime?
 }
@@ -39,6 +40,16 @@ model Stream {
 enum StreamStatus {
   LIVE
   ENDED
+}
+
+/// Picked in the go-live funnel, required before a stream can start —
+/// mirrors planLive's category step. Global list, not per-seller.
+model Category {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  name      String
+  imageUrl  String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
 }
 
 /// A placed Cash-on-Delivery order. No accounts, so buyer contact + address

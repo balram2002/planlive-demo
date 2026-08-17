@@ -60,6 +60,19 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // Category is mandatory, mirroring the funnel order: products, then
+  // category, then go live.
+  const categoryId = String(body.categoryId ?? "");
+  const category = categoryId
+    ? await prisma.category.findUnique({ where: { id: categoryId } })
+    : null;
+  if (!category || !category.isActive) {
+    return NextResponse.json(
+      { error: "Pick a category for your stream." },
+      { status: 400 },
+    );
+  }
+
   const title =
     String(body.title ?? "").trim().slice(0, 80) || null;
   const thumbnailUrl =
@@ -74,6 +87,7 @@ export async function POST(req: NextRequest) {
       status: "LIVE",
       title,
       thumbnailUrl,
+      categoryId: category.id,
     },
   });
 

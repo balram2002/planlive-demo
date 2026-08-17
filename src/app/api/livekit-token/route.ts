@@ -36,10 +36,15 @@ export async function GET(req: NextRequest) {
     ? `seller_${stream.id}`
     : `guest_${crypto.randomUUID().slice(0, 8)}`;
 
+  // Guests pick (and locally persist) a display name so chat doesn't show
+  // every viewer as "Guest" — trusted only as a label, never an identity.
+  const rawName = req.nextUrl.searchParams.get("name") ?? "";
+  const guestName = rawName.trim().slice(0, 24) || "Guest";
+
   const token = await createAccessToken({
     roomName: stream.livekitRoomName,
     identity,
-    name: isBroadcaster ? "Seller" : "Guest",
+    name: isBroadcaster ? "Seller" : guestName,
     canPublish: isBroadcaster,
   });
 

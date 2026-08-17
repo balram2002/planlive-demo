@@ -1,16 +1,32 @@
 "use client";
 
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   LiveKitRoom,
   RoomAudioRenderer,
   VideoTrack,
   useConnectionState,
+  useDataChannel,
+  useLocalParticipant,
+  useRoomContext,
   useTrackToggle,
   useTracks,
 } from "@livekit/components-react";
-import { ConnectionState, Track, VideoPresets, type RoomOptions } from "livekit-client";
+import {
+  ConnectionState,
+  RoomEvent,
+  Track,
+  VideoPresets,
+  type RemoteParticipant,
+  type RoomOptions,
+} from "livekit-client";
 import { useLivekitToken } from "./use-livekit-token";
 import { Elapsed } from "./elapsed";
+import { ChatOverlay } from "./chat";
+import { FloatingReactions, useReactions } from "./reactions";
+import { LiveNotices, useLiveNotices } from "./live-notices";
+import { OrderCelebration, type Celebration } from "./order-celebration";
+import { ViewerCount } from "./viewer-count";
 import { cn } from "@/lib/cn";
 
 const ROOM_OPTIONS: RoomOptions = {
@@ -23,7 +39,7 @@ const ROOM_OPTIONS: RoomOptions = {
   },
 };
 
-/** Seller's broadcast surface: local camera preview + camera/mic toggles. */
+/** Seller's broadcast surface: local camera preview, chat/reactions/notices/celebration same as the buyer sees, camera/mic toggles. */
 export function BroadcasterRoom({
   streamId,
   broadcastSecret,
@@ -94,10 +110,65 @@ function DeviceToggle({
 
 function BroadcasterStage({ startedAt }: { startedAt: string }) {
   const connectionState = useConnectionState();
+  const room = useRoomContext();
+  const { localParticipant } = useLocalParticipant();
+  const { floats, remove } = useReactions();
+  const { notices, push: pushNotice } = useLiveNotices();
+  const [celebration, setCelebration] = useState<Celebration | null>(null);
+  const celebrationId = useRef(0);
+  const lastLikeAt = useRef<Map<string, number>>(new Map());
 
-  const cameraTracks = useTracks([Track.Source.Camera]).filter(
-    (t) => t.participant.isLocal,
+  useEffect(() => {
+    const onJoin = (participant: RemoteParticipant) => {
+      pushNotice("join", participant.name || "someone");
+    };
+    room.on(RoomEvent.ParticipantConnected, onJoin);
+    return () => {
+      room.off(RoomEvent.ParticipantConnected, onJoin);
+    };
+  }, [room, pushNotice]);
+
+  const onData = useCallback(
+    (msg: { payload: Uint8Array; from?: { identity: string; name?: string } }) => {
+      let data: Record<string, unknown>;
+      try {
+        data = JSON.parse(new TextDecoder().decode(msg.payload));
+      } catch {
+        return;
+      }
+
+      if (msg.from) {
+        const who = msg.from.name || "someone";
+        if (data?.type === "reaction") {
+          const now = Date.now();
+          const previous = lastLikeAt.current.get(msg.from.identity) ?? 0;
+          if (now - previous > 8000) {
+            lastLikeAt.current.set(msg.from.identity, now);
+            pushNotice("like", who);
+          }
+        } else if (data?.type === "share") {
+          pushNotice("share", who);
+        }
+        return;
+      }
+
+      if (data?.type === "order-celebration") {
+        setCelebration({
+          id: ++celebrationId.current,
+          buyerName: String(data.buyerName ?? "Someone"),
+          productTitle: String(data.productTitle ?? "an item"),
+          productImageUrl: typeof data.productImageUrl === "string" ? data.productImageUrl : null,
+          quantity: Number(data.quantity) || 1,
+        });
+      }
+    },
+    [pushNotice],
   );
+  useDataChannel(onData);
+
+  const clearCelebration = useCallback(() => setCelebration(null), []);
+
+  const cameraTracks = useTracks([Track.Source.Camera]).filter((t) => t.participant.isLocal);
   const preview = cameraTracks[0];
 
   return (
@@ -106,33 +177,37 @@ function BroadcasterStage({ startedAt }: { startedAt: string }) {
         <VideoTrack trackRef={preview} className="h-full w-full object-cover" />
       ) : (
         <div className="flex h-full items-center justify-center text-sm text-white/60">
-          {connectionState === ConnectionState.Connected
-            ? "Starting camera…"
-            : "Connecting…"}
+          {connectionState === ConnectionState.Connected ? "Starting camera…" : "Connecting…"}
         </div>
       )}
 
-      <div className="pointer-events-none absolute inset-x-0 top-0 flex items-center gap-2 bg-gradient-to-b from-black/70 to-transparent p-3">
-        <span className="flex items-center gap-1 rounded-full bg-live px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide text-white">
-          <span className="h-1.5 w-1.5 rounded-full bg-white animate-live-pulse" />
-          Live
-        </span>
-        <Elapsed startedAt={startedAt} />
+      <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex items-center justify-between gap-2 bg-gradient-to-b from-black/70 to-transparent p-3">
+        <div className="pointer-events-auto flex items-center gap-1.5">
+          <span className="flex items-center gap-1 rounded-full bg-live px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide text-white">
+            <span className="h-1.5 w-1.5 rounded-full bg-white animate-live-pulse" />
+            Live
+          </span>
+          <Elapsed startedAt={startedAt} />
+        </div>
+        <div className="pointer-events-auto">
+          <ViewerCount />
+        </div>
       </div>
 
+      <FloatingReactions floats={floats} onDone={remove} />
+      <LiveNotices notices={notices} />
+      <OrderCelebration celebration={celebration} onDone={clearCelebration} />
+
+      {/* Viewer chat, moderatable — the seller can delete a message or mute a sender. */}
+      <ChatOverlay
+        broadcasterIdentity={localParticipant.identity}
+        canModerate
+        className="absolute inset-x-3 bottom-24 z-10"
+      />
+
       <div className="absolute inset-x-0 bottom-0 flex items-center justify-center gap-6 bg-gradient-to-t from-black/80 to-transparent px-4 pb-4 pt-12">
-        <DeviceToggle
-          source={Track.Source.Camera}
-          label="Camera"
-          onIcon={<CameraIcon />}
-          offIcon={<CameraOffIcon />}
-        />
-        <DeviceToggle
-          source={Track.Source.Microphone}
-          label="Mic"
-          onIcon={<MicIcon />}
-          offIcon={<MicOffIcon />}
-        />
+        <DeviceToggle source={Track.Source.Camera} label="Camera" onIcon={<CameraIcon />} offIcon={<CameraOffIcon />} />
+        <DeviceToggle source={Track.Source.Microphone} label="Mic" onIcon={<MicIcon />} offIcon={<MicOffIcon />} />
       </div>
     </div>
   );

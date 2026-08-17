@@ -1,36 +1,50 @@
 # liveWAB demo/test
 
-A stripped-down clone of the planLive app for demoing the core live-shopping
-loop end to end, with nothing else in the way:
+A clone of planLive's live-shopping loop end to end:
 
-- **`/`** — buyer discover page: list of currently-live streams.
-- **`/live/[streamId]`** — buyer live room: LiveKit video + a "Shop" button
-  that opens the product list, each with **Buy Now** → a checkout drawer.
-- **`/backstage-92k4x7`** — seller studio (see below). Not linked from
-  anywhere in the UI, and gated by a password modal.
+- **`/`** — buyer discover page: list of currently-live streams, with a
+  footer link through to the seller studio.
+- **`/live/[streamId]`** — buyer live room, matching planLive's feature set:
+  LiveKit video, live chat, double-tap/button heart reactions with floating
+  animation, a rolling activity ticker (joins/likes/shares), a full-screen
+  "someone just bought this" celebration when any order lands, a live viewer
+  count, share, mute-audio/hide-video, and a "Shop" button opening the
+  product list with **Buy Now** → a checkout drawer.
+- **`/backstage-92k4x7`** — seller studio (see below), password-gated.
 
-That's the entire app. No accounts, no sign-in, no product management pages,
-no chat/reactions, no online payment. Checkout only asks for a name, mobile
-number (not OTP-verified) and delivery address, then places a **Cash on
-Delivery** order.
+No accounts, no sign-in, no online payment. Checkout only asks for a name,
+mobile number (not OTP-verified) and delivery address, then places a **Cash
+on Delivery** order. Chat/reactions/notices ride the LiveKit data channel —
+nothing is stored in the database, it only exists for as long as the room
+does.
 
-## The seller studio is hidden, not public
+**Left out on purpose**, since neither has a coherent meaning without
+accounts: *Follow* (nothing persists a buyer↔seller relationship — there are
+no buyer accounts at all) and the seller-pinned "featured product" card (no
+seller-side control for it exists in this build). Everything else from
+planLive's live room — comment, like, view products, buy — is here.
 
-`/backstage-92k4x7` is the seller "start live" studio: add products (with a
-photo), pick which ones to feature, go live. Once live, this same page
-becomes the broadcast view (camera/mic controls + End stream). Nothing in the
-buyer-facing UI links to it.
+## The seller studio: hidden path + password, not auth
 
-The hidden URL is only obscurity, though — the actual protection is a
-password gate in front of it (`SELLER_PASSWORD`). Every seller-only API route
-(`/api/products` POST/GET, `/api/stream/start`, `/api/stream/end`,
-`/api/upload`, `/api/imagekit-auth`) independently checks a signed session
-cookie, so even someone who finds the URL can't add products or go live
-without the password — and calling those APIs directly, bypassing the UI
-entirely, doesn't work either.
+`/backstage-92k4x7` is the seller studio: a 3-step go-live funnel (pick
+products → pick a category → review and go live), and once live, this same
+page becomes the broadcast view (camera/mic controls, the same chat/
+reactions/notices/celebration the buyer sees, moderation — delete a message
+or mute a sender — and End stream).
+
+The URL isn't linked from the buyer-facing pages except the discover page's
+footer link — but that link makes the path discoverable, so it is **not**
+the real protection. The real protection is a password gate in front of it
+(`SELLER_PASSWORD`). Every seller-only API route (`/api/products`,
+`/api/categories`, `/api/stream/start`, `/api/stream/end`, `/api/upload`,
+`/api/imagekit-auth`) independently checks a signed session cookie, so even
+someone who has the URL can't add products or go live without the password —
+and calling those APIs directly, bypassing the UI entirely, doesn't work
+either.
 
 **Change the path**: rename the `src/app/backstage-92k4x7` folder to whatever
-you want the URL to be.
+you want the URL to be, and update the footer link in `src/app/page.tsx` to
+match (or delete the link if you'd rather it stayed unlinked).
 
 **Change the password**: set `SELLER_PASSWORD` in your env. Sessions last 12
 hours per browser (httpOnly cookie); there's a "Lock" button in the studio to
@@ -95,6 +109,16 @@ almost always **Atlas Network Access**: Vercel's outbound IPs are dynamic, so
 the cluster's IP allowlist needs `0.0.0.0/0` (or Vercel's Secure Compute with
 a static IP, if you have it) — not just your own machine's IP.
 
+## Seeding demo data
+
+```bash
+npm run db:check                               # confirm the DB connection first
+node --env-file=.env.local scripts/seed-categories.mjs
+node --env-file=.env.local scripts/seed-demo.mjs   # 5 demo products with real hosted images
+```
+
+Both are safe to re-run.
+
 ## Notes on scope
 
 - Single implicit seller — only one stream can be live at a time.
@@ -103,3 +127,5 @@ a static IP, if you have it) — not just your own machine's IP.
 - Orders are Cash on Delivery only; there's no order-status/fulfilment
   tracking beyond "placed" — this is a funnel demo, not a full commerce
   backend.
+- `/api/health` reports DB connectivity + which integrations are configured,
+  without leaking secrets — hit it after any deploy to sanity-check.

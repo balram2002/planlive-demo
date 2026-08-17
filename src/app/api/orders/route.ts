@@ -3,6 +3,13 @@ import { prisma } from "@/lib/prisma";
 import { priceBreakdown } from "@/lib/pricing";
 import { broadcastToRoom } from "@/lib/livekit";
 
+/** "Priya Sharma" -> "Priya S." — shown to the whole room in the celebration overlay, so a full real name never gets broadcast. */
+function displaySafeName(fullName: string): string {
+  const parts = fullName.trim().split(/\s+/).filter(Boolean);
+  if (parts.length <= 1) return parts[0] ?? "Someone";
+  return `${parts[0]} ${parts[parts.length - 1][0]}.`;
+}
+
 /**
  * POST /api/orders
  * { productId, buyerName, buyerPhone, addressLine1, addressLine2?, city, state, pincode }
@@ -119,8 +126,11 @@ export async function POST(req: NextRequest) {
     availableStock: remainingStock,
   });
   await broadcastToRoom(stream.livekitRoomName, {
-    type: "order-placed",
+    type: "order-celebration",
+    buyerName: displaySafeName(buyerName),
     productTitle: product.title,
+    productImageUrl: product.imageUrl,
+    quantity: 1,
   });
 
   return NextResponse.json({

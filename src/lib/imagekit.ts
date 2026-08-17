@@ -32,4 +32,9 @@ export function mintUploadAuth(): {
   return { token, expire, signature };
 }
 
-export const IMAGEKIT_PRODUCT_FOLDER = "/livewab-demo/products";
+export const IMAGEKIT_FOLDERS = {
+  thumbnail: "/livewab-demo/thumbnails",
+  product: "/livewab-demo/products",
+} as const;
+
+export type ImagekitFolderKind = keyof typeof IMAGEKIT_FOLDERS;

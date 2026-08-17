@@ -1,15 +1,21 @@
 # liveWAB demo/test
 
-A clone of planLive's live-shopping loop end to end:
+A close clone of planLive's live-shopping experience — same components,
+same interactions, same design system — adapted for a no-accounts,
+COD-only demo:
 
-- **`/`** — buyer discover page: list of currently-live streams, with a
+- **`/`** — buyer discover page: category rail + auto-refreshing live-stream
+  grid, styled like planLive's own (`StreamCard`, `CategoryRail`), with a
   footer link through to the seller studio.
 - **`/live/[streamId]`** — buyer live room, matching planLive's feature set:
-  LiveKit video, live chat, double-tap/button heart reactions with floating
-  animation, a rolling activity ticker (joins/likes/shares), a full-screen
-  "someone just bought this" celebration when any order lands, a live viewer
-  count, share, mute-audio/hide-video, and a "Shop" button opening the
-  product list with **Buy Now** → a checkout drawer.
+  LiveKit video, live chat (with broadcaster moderation), double-tap/button
+  heart reactions with floating animation, a rolling activity ticker
+  (joins/likes/shares/follows), a pinned "featured product" card, a
+  full-screen "someone just bought this" celebration when any order lands, a
+  live viewer count, a full share sheet (WhatsApp/Telegram/X/Facebook/Email/
+  native share), a three-dot menu (mute audio / hide video / report), and a
+  "Shop" button opening the product panel with **Buy Now** → a checkout
+  drawer.
 - **`/backstage-92k4x7`** — seller studio (see below), password-gated.
 
 No accounts, no sign-in, no online payment. Checkout only asks for a name,
@@ -18,33 +24,40 @@ on Delivery** order. Chat/reactions/notices ride the LiveKit data channel —
 nothing is stored in the database, it only exists for as long as the room
 does.
 
-**Left out on purpose**, since neither has a coherent meaning without
-accounts: *Follow* (nothing persists a buyer↔seller relationship — there are
-no buyer accounts at all) and the seller-pinned "featured product" card (no
-seller-side control for it exists in this build). Everything else from
-planLive's live room — comment, like, view products, buy — is here.
+**One thing is necessarily different**: *Follow* has no buyer account to
+persist against (there are none), so it's a per-browser, per-stream
+`localStorage` toggle — real interaction, cosmetic persistence. Said plainly
+here rather than silently faking a real follow relationship.
 
 ## The seller studio: hidden path + password, not auth
 
-`/backstage-92k4x7` is the seller studio: a 3-step go-live funnel (pick
-products → pick a category → review and go live), and once live, this same
-page becomes the broadcast view (camera/mic controls, the same chat/
-reactions/notices/celebration the buyer sees, moderation — delete a message
-or mute a sender — and End stream).
+`/backstage-92k4x7` is the seller studio — matching planLive's actual
+architecture, its mutations (`createProduct`, `startStream`, `endStream`,
+`createProductInLive`, `addProductToStream`, `removeProductFromStream`,
+`setFeaturedProduct`, `adjustStock`) are real Next.js **Server Actions**
+(`src/app/backstage-92k4x7/actions.ts`), not REST calls.
+
+The funnel: add products → pick a category (required) → review → go live.
+Once live, this same page becomes the broadcast studio:
+
+- Camera/mic controls, the same chat/reactions/notices/celebration the buyer
+  sees, plus moderation (delete a message, mute a sender).
+- **Live console**: live order/revenue stats, pin/unpin the featured
+  product, adjust stock ±1, remove a product from the stream, add an
+  existing product to the stream, or add a brand-new product without
+  leaving the broadcast (`LiveAddProduct` — same overlay-pill-on-video
+  pattern as planLive).
 
 The URL isn't linked from the buyer-facing pages except the discover page's
-footer link — but that link makes the path discoverable, so it is **not**
-the real protection. The real protection is a password gate in front of it
-(`SELLER_PASSWORD`). Every seller-only API route (`/api/products`,
-`/api/categories`, `/api/stream/start`, `/api/stream/end`, `/api/upload`,
-`/api/imagekit-auth`) independently checks a signed session cookie, so even
-someone who has the URL can't add products or go live without the password —
-and calling those APIs directly, bypassing the UI entirely, doesn't work
-either.
+footer link — that link makes the path discoverable, so it is **not** the
+real protection. The real protection is a password gate in front of it
+(`SELLER_PASSWORD`). Every seller-only route and action independently checks
+a signed session cookie, so even someone who has the URL can't add products
+or go live without the password.
 
-**Change the path**: rename the `src/app/backstage-92k4x7` folder to whatever
-you want the URL to be, and update the footer link in `src/app/page.tsx` to
-match (or delete the link if you'd rather it stayed unlinked).
+**Change the path**: rename the `src/app/backstage-92k4x7` folder (the
+actions file lives alongside it) to whatever you want the URL to be, and
+update the footer link in `src/app/page.tsx` to match.
 
 **Change the password**: set `SELLER_PASSWORD` in your env. Sessions last 12
 hours per browser (httpOnly cookie); there's a "Lock" button in the studio to
@@ -54,7 +67,7 @@ end one early.
 
 Separately from the password gate above: once inside the studio, nothing
 server-side can tell "the seller's browser" apart from anyone else's for
-LiveKit purposes. `POST /api/stream/start` mints a random `broadcastSecret`
+LiveKit purposes. The `startStream` action mints a random `broadcastSecret`
 and returns it once, to the caller only. The seller's browser stashes it in
 `localStorage`; minting a LiveKit *publish* token requires presenting it.
 Lose it — clear localStorage, open a different browser — and you can no
@@ -70,16 +83,16 @@ npm run dev
 ```
 
 This app is designed to reuse the **same env vars** as the main planLive
-project — `DATABASE_URL` (must point at a different database/collection
-prefix than production if you're testing against the same cluster, since the
-Prisma models here are a different shape), `LIVEKIT_API_KEY` /
-`LIVEKIT_API_SECRET` / `LIVEKIT_URL`, and optionally the `NEXT_PUBLIC_IMAGEKIT_*`
-/ `IMAGEKIT_PRIVATE_KEY` trio. If ImageKit isn't configured, product photos
-fall back to local disk storage at `public/uploads/`. `SELLER_PASSWORD` is
-new to this app (planLive doesn't have it) — pick your own value.
+project — `DATABASE_URL` (must point at a different database than
+production, since the Prisma models here are a different shape),
+`LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` / `LIVEKIT_URL`, and optionally the
+`NEXT_PUBLIC_IMAGEKIT_*` / `IMAGEKIT_PRIVATE_KEY` trio. If ImageKit isn't
+configured, product photos fall back to local disk storage at
+`public/uploads/`. `SELLER_PASSWORD` is new to this app (planLive doesn't
+have it) — pick your own value.
 
-> **Use a separate database** from the production planLive app — this schema
-> only has `Product`, `Stream`, and `Order` models and doesn't include seller
+> **Use a separate database** from the production planLive app — this
+> schema (`Product`, `Stream`, `Category`, `Order`) doesn't include seller
 > accounts, so pointing it at the same database as the real app would leave
 > orphaned/incompatible data on both sides.
 
@@ -88,8 +101,8 @@ new to this app (planLive doesn't have it) — pick your own value.
 MongoDB connection strings copied straight from the Atlas "Connect" dialog
 often look like `mongodb+srv://user:pass@cluster0.xxxxx.mongodb.net/?appName=Cluster0`
 — no database name before the `?`. Prisma's Mongo connector rejects that with
-`empty database name not allowed`, and since every API route in this app
-touches the database, that one typo makes *all* of them fail at once. Add a
+`empty database name not allowed`, and since almost every route in this app
+touches the database, that one typo makes most of them fail at once. Add a
 name:
 
 ```
@@ -99,7 +112,7 @@ mongodb+srv://user:pass@cluster0.xxxxx.mongodb.net/livewab_demo?retryWrites=true
 `npm run db:check` catches this (and a couple of other common misconfigs —
 Atlas IP allowlist, a paused cluster) with a specific message instead of a
 raw driver stack trace. Run it after changing `DATABASE_URL`, and again after
-deploying if API routes start 500ing in production.
+deploying if things start 500ing in production.
 
 ### Deploying (e.g. Vercel)
 
@@ -112,9 +125,9 @@ a static IP, if you have it) — not just your own machine's IP.
 ## Seeding demo data
 
 ```bash
-npm run db:check                               # confirm the DB connection first
+npm run db:check                                    # confirm the DB connection first
 node --env-file=.env.local scripts/seed-categories.mjs
-node --env-file=.env.local scripts/seed-demo.mjs   # 5 demo products with real hosted images
+node --env-file=.env.local scripts/seed-demo.mjs    # 5 demo products with real hosted images
 ```
 
 Both are safe to re-run.
@@ -129,3 +142,7 @@ Both are safe to re-run.
   backend.
 - `/api/health` reports DB connectivity + which integrations are configured,
   without leaking secrets — hit it after any deploy to sanity-check.
+- Full design-system parity with planLive: light/dark theme (via
+  `next-themes`, follows system preference), the same product-attribute
+  presets (clothing sizes, electronics storage/RAM, etc.), the same toast
+  system, the same motion vocabulary.

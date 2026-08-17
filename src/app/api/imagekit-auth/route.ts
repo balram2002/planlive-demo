@@ -1,16 +1,17 @@
 import { NextResponse, type NextRequest } from "next/server";
 import {
-  IMAGEKIT_PRODUCT_FOLDER,
+  IMAGEKIT_FOLDERS,
   IMAGEKIT_PUBLIC_KEY,
   imagekitConfigured,
   mintUploadAuth,
+  type ImagekitFolderKind,
 } from "@/lib/imagekit";
 import { isSellerRequest } from "@/lib/seller-auth";
 
 /**
- * GET /api/imagekit-auth — signature for a direct-to-ImageKit upload.
- * 503 when ImageKit isn't configured, so the client falls back to /api/upload.
- * Seller-only, same as /api/upload.
+ * GET /api/imagekit-auth?kind=product|thumbnail — signature for a
+ * direct-to-ImageKit upload. 503 when ImageKit isn't configured, so the
+ * client falls back to /api/upload. Seller-only, same as /api/upload.
  */
 export async function GET(req: NextRequest) {
   if (!isSellerRequest(req)) {
@@ -23,6 +24,9 @@ export async function GET(req: NextRequest) {
     );
   }
 
+  const kind = req.nextUrl.searchParams.get("kind") as ImagekitFolderKind | null;
+  const folder = (kind && IMAGEKIT_FOLDERS[kind]) || IMAGEKIT_FOLDERS.product;
+
   const { token, expire, signature } = mintUploadAuth();
 
   return NextResponse.json({
@@ -30,6 +34,6 @@ export async function GET(req: NextRequest) {
     expire,
     signature,
     publicKey: IMAGEKIT_PUBLIC_KEY,
-    folder: IMAGEKIT_PRODUCT_FOLDER,
+    folder,
   });
 }

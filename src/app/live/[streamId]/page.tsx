@@ -1,7 +1,40 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { ViewerRoom } from "@/components/viewer-room";
+import { parseAttributes } from "@/lib/product-attributes";
+
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ streamId: string }>;
+}): Promise<Metadata> {
+  const fallback: Metadata = {
+    title: "Live stream",
+    description: "Watch live and shop in real time on liveWAB.",
+  };
+  try {
+    const { streamId } = await params;
+    const stream = await prisma.stream.findUnique({ where: { id: streamId } });
+    if (!stream) return fallback;
+    if (stream.status !== "LIVE") {
+      return { title: "Stream ended", robots: { index: false } };
+    }
+    const productCount = await prisma.product.count({ where: { streamId: stream.id } });
+    const title = stream.title ?? "Live now";
+    const description = `${productCount} ${productCount === 1 ? "product" : "products"} up for grabs — reserve instantly with Buy Now.`;
+    const images = stream.thumbnailUrl ? [{ url: stream.thumbnailUrl }] : undefined;
+    return {
+      title,
+      description,
+      openGraph: { title, description, url: `/live/${stream.id}`, type: "video.other", images },
+      twitter: { card: images ? "summary_large_image" : "summary", title, description, images },
+    };
+  } catch {
+    return fallback;
+  }
+}
 
 export default async function LiveStreamPage({
   params,
@@ -41,12 +74,15 @@ export default async function LiveStreamPage({
       <ViewerRoom
         streamId={stream.id}
         startedAt={stream.startedAt.toISOString()}
+        thumbnailUrl={stream.thumbnailUrl}
+        featuredProductId={stream.featuredProductId}
         initialProducts={products.map((p) => ({
           id: p.id,
           title: p.title,
           priceInPaise: p.priceInPaise,
           availableStock: p.availableStock,
           imageUrl: p.imageUrl,
+          attributes: parseAttributes(p.attributesJson),
         }))}
       />
     </div>

@@ -27,6 +27,7 @@ import { FloatingReactions, useReactions } from "./reactions";
 import { LiveNotices, useLiveNotices } from "./live-notices";
 import { OrderCelebration, type Celebration } from "./order-celebration";
 import { ViewerCount } from "./viewer-count";
+import { LiveAddProduct } from "./live-add-product";
 import { cn } from "@/lib/cn";
 
 const ROOM_OPTIONS: RoomOptions = {
@@ -71,7 +72,7 @@ export function BroadcasterRoom({
       options={ROOM_OPTIONS}
       className="block"
     >
-      <BroadcasterStage startedAt={startedAt} />
+      <BroadcasterStage streamId={streamId} startedAt={startedAt} />
       <RoomAudioRenderer />
     </LiveKitRoom>
   );
@@ -108,7 +109,7 @@ function DeviceToggle({
   );
 }
 
-function BroadcasterStage({ startedAt }: { startedAt: string }) {
+function BroadcasterStage({ streamId, startedAt }: { streamId: string; startedAt: string }) {
   const connectionState = useConnectionState();
   const room = useRoomContext();
   const { localParticipant } = useLocalParticipant();
@@ -192,6 +193,11 @@ function BroadcasterStage({ startedAt }: { startedAt: string }) {
         <div className="pointer-events-auto">
           <ViewerCount />
         </div>
+      </div>
+
+      {/* Add-product shortcut — lets the seller list something new without leaving the broadcast view. */}
+      <div className="pointer-events-none absolute left-3 top-14 z-30">
+        <LiveAddProduct streamId={streamId} variant="overlay" />
       </div>
 
       <FloatingReactions floats={floats} onDone={remove} />

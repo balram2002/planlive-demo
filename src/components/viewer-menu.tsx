@@ -1,0 +1,164 @@
+"use client";
+
+import { useState, useSyncExternalStore } from "react";
+import { createPortal } from "react-dom";
+import { AnimatePresence, motion } from "motion/react";
+import { useToast } from "@/components/toast";
+import { haptics } from "@/lib/haptics";
+import { cn } from "@/lib/cn";
+
+const emptySubscribe = () => () => {};
+function useMounted(): boolean {
+  return useSyncExternalStore(emptySubscribe, () => true, () => false);
+}
+
+type Row = {
+  key: string;
+  label: string;
+  icon: string;
+  active?: boolean;
+  danger?: boolean;
+  onPress: () => void;
+};
+
+/** Three-dot drawer for viewers: mute audio, hide video, share, report. Portaled bottom sheet. */
+export function ViewerMenu({
+  audioMuted,
+  onToggleAudio,
+  videoHidden,
+  onToggleVideo,
+  onOpenShare,
+}: {
+  audioMuted: boolean;
+  onToggleAudio: () => void;
+  videoHidden: boolean;
+  onToggleVideo: () => void;
+  onOpenShare: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const mounted = useMounted();
+  const { toast } = useToast();
+
+  function close() {
+    setOpen(false);
+  }
+
+  const rows: Row[] = [
+    {
+      key: "audio",
+      label: audioMuted ? "Unmute audio" : "Mute audio",
+      icon: audioMuted ? "🔇" : "🔊",
+      active: audioMuted,
+      onPress: () => {
+        haptics.tap();
+        onToggleAudio();
+        close();
+      },
+    },
+    {
+      key: "video",
+      label: videoHidden ? "Show video" : "Hide video (save data)",
+      icon: videoHidden ? "🎬" : "📵",
+      active: videoHidden,
+      onPress: () => {
+        haptics.tap();
+        onToggleVideo();
+        close();
+      },
+    },
+    {
+      key: "share",
+      label: "Share stream",
+      icon: "📤",
+      onPress: () => {
+        haptics.tap();
+        close();
+        onOpenShare();
+      },
+    },
+    {
+      key: "report",
+      label: "Report stream",
+      icon: "🚩",
+      danger: true,
+      onPress: () => {
+        haptics.impact();
+        toast({ title: "Report received", description: "Thanks — our team will take a look.", variant: "success" });
+        close();
+      },
+    },
+  ];
+
+  return (
+    <>
+      <button
+        type="button"
+        aria-label="Stream options"
+        onClick={() => {
+          haptics.tap();
+          setOpen(true);
+        }}
+        className="flex h-8 w-8 items-center justify-center rounded-full bg-black/60 text-white backdrop-blur transition-all duration-200 active:scale-90"
+      >
+        <svg viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4" aria-hidden>
+          <circle cx="12" cy="5" r="1.8" />
+          <circle cx="12" cy="12" r="1.8" />
+          <circle cx="12" cy="19" r="1.8" />
+        </svg>
+      </button>
+
+      {mounted
+        ? createPortal(
+            <AnimatePresence>
+              {open ? (
+                <>
+                  <motion.button
+                    aria-label="Close options"
+                    className="fixed inset-0 z-[80] bg-black/40"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    transition={{ duration: 0.2 }}
+                    onClick={close}
+                  />
+                  <motion.div
+                    role="dialog"
+                    aria-label="Stream options"
+                    className="fixed inset-x-0 bottom-0 z-[90] mx-auto max-w-md rounded-t-3xl border border-b-0 border-border bg-surface p-4 pb-[calc(env(safe-area-inset-bottom)+1rem)] shadow-pop"
+                    initial={{ y: "100%" }}
+                    animate={{ y: 0 }}
+                    exit={{ y: "100%" }}
+                    transition={{ type: "spring", stiffness: 380, damping: 36 }}
+                  >
+                    <div className="mx-auto mb-3 h-1 w-10 rounded-full bg-border" />
+                    <ul className="space-y-0.5">
+                      {rows.map((row) => (
+                        <li key={row.key}>
+                          <button
+                            type="button"
+                            onClick={row.onPress}
+                            className={cn(
+                              "flex w-full items-center gap-3 rounded-2xl px-4 py-3 text-left text-sm font-medium transition-colors active:scale-[0.99]",
+                              row.danger ? "text-live hover:bg-live/10" : "hover:bg-surface-2",
+                              row.active && "bg-surface-2",
+                            )}
+                          >
+                            <span aria-hidden className="text-base">
+                              {row.icon}
+                            </span>
+                            {row.label}
+                            {row.active ? <span className="ml-auto text-xs text-primary">On</span> : null}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </motion.div>
+                </>
+              ) : null}
+            </AnimatePresence>,
+            document.body,
+          )
+        : null}
+    </>
+  );
+}

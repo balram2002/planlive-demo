@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { parseAttributes } from "@/lib/product-attributes";
 
 /** GET /api/streams/:streamId — stream info + the products pinned to it. */
 export async function GET(
@@ -23,6 +24,7 @@ export async function GET(
       status: stream.status,
       title: stream.title,
       thumbnailUrl: stream.thumbnailUrl,
+      featuredProductId: stream.featuredProductId,
       startedAt: stream.startedAt.toISOString(),
     },
     products: products.map((p) => ({
@@ -31,6 +33,7 @@ export async function GET(
       priceInPaise: p.priceInPaise,
       availableStock: p.availableStock,
       imageUrl: p.imageUrl,
+      attributes: parseAttributes(p.attributesJson),
     })),
   });
 }

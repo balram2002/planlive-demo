@@ -1,75 +1,137 @@
 "use client";
 
-import Image from "next/image";
+import { AnimatePresence, motion } from "motion/react";
+import { ProductThumb } from "@/components/product-thumb";
+import { AttributeChips } from "@/components/products/attribute-chips";
+import { cn } from "@/lib/cn";
 import { formatPrice } from "@/lib/format";
 import type { ViewerProduct } from "./viewer-room";
 
+/** Full-height right-side products panel for the live room. */
 export function ProductsPanel({
   open,
   onClose,
   products,
+  featuredId,
   onBuy,
 }: {
   open: boolean;
   onClose: () => void;
   products: ViewerProduct[];
+  featuredId: string | null;
   onBuy: (product: ViewerProduct) => void;
 }) {
-  if (!open) return null;
+  const ordered = featuredId
+    ? [...products.filter((p) => p.id === featuredId), ...products.filter((p) => p.id !== featuredId)]
+    : products;
 
   return (
-    <>
-      <button
-        aria-label="Close products"
-        className="absolute inset-0 z-40 bg-black/60"
-        onClick={onClose}
-      />
-      <div
-        role="dialog"
-        aria-label="Products"
-        className="absolute inset-x-0 bottom-0 z-50 max-h-[75%] overflow-y-auto rounded-t-3xl border border-b-0 border-border bg-surface p-4 pb-[calc(env(safe-area-inset-bottom)+1rem)] shadow-pop"
-      >
-        <div className="mx-auto mb-3 h-1 w-10 rounded-full bg-border" />
-        <h2 className="mb-3 text-base font-semibold">
-          Shop this stream ({products.length})
-        </h2>
-
-        {products.length === 0 ? (
-          <p className="py-6 text-center text-sm text-muted">
-            No products featured yet.
-          </p>
-        ) : (
-          <div className="space-y-2">
-            {products.map((p) => (
-              <div
-                key={p.id}
-                className="flex items-center gap-3 rounded-2xl border border-border bg-surface p-2.5"
+    <AnimatePresence>
+      {open ? (
+        <>
+          <motion.button
+            aria-label="Close products"
+            className="absolute inset-0 z-30 bg-black/50"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            onClick={onClose}
+          />
+          <motion.aside
+            role="dialog"
+            aria-label="Products in this stream"
+            data-no-swipe
+            className="absolute bottom-0 right-0 top-0 z-40 flex w-[320px] max-w-[85%] flex-col border-l border-border bg-surface shadow-pop"
+            initial={{ x: "100%" }}
+            animate={{ x: 0 }}
+            exit={{ x: "100%" }}
+            transition={{ type: "spring", stiffness: 380, damping: 38 }}
+          >
+            <header className="flex h-14 shrink-0 items-center justify-between border-b border-border px-4">
+              <h2 className="text-sm font-semibold">
+                Products <span className="text-faint">({products.length})</span>
+              </h2>
+              <button
+                type="button"
+                onClick={onClose}
+                aria-label="Close"
+                className="flex h-8 w-8 items-center justify-center rounded-full text-muted transition-all hover:bg-surface-2 hover:text-foreground active:scale-90"
               >
-                <span className="relative h-14 w-14 shrink-0 overflow-hidden rounded-xl bg-surface-2">
-                  {p.imageUrl ? (
-                    <Image src={p.imageUrl} alt={p.title} fill sizes="56px" className="object-cover" />
-                  ) : null}
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm font-medium">{p.title}</span>
-                  <span className="text-xs text-muted">
-                    {formatPrice(p.priceInPaise)} ·{" "}
-                    {p.availableStock > 0 ? `${p.availableStock} left` : "Sold out"}
-                  </span>
-                </span>
-                <button
-                  type="button"
-                  disabled={p.availableStock <= 0}
-                  onClick={() => onBuy(p)}
-                  className="shrink-0 rounded-full bg-primary px-3.5 py-2 text-xs font-bold text-primary-foreground transition-all active:scale-95 disabled:bg-surface-2 disabled:text-faint"
-                >
-                  {p.availableStock <= 0 ? "Sold out" : "Buy Now"}
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    </>
+                <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4" aria-hidden>
+                  <path d="m6 6 12 12M18 6 6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                </svg>
+              </button>
+            </header>
+
+            <div className="no-scrollbar min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
+              {ordered.length === 0 ? (
+                <p className="py-10 text-center text-sm text-faint">No products in this stream yet.</p>
+              ) : (
+                <AnimatePresence initial={false}>
+                  {ordered.map((product) => {
+                    const featured = product.id === featuredId;
+                    const soldOut = product.availableStock <= 0;
+                    return (
+                      <motion.div
+                        key={product.id}
+                        layout
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, scale: 0.96 }}
+                        transition={{ type: "spring", stiffness: 380, damping: 32 }}
+                        className={cn(
+                          "rounded-2xl border bg-surface p-3.5 shadow-card transition-colors duration-300",
+                          featured ? "border-primary/60 bg-primary/5" : "border-border",
+                        )}
+                      >
+                        {featured ? (
+                          <span className="mb-1.5 inline-flex items-center gap-1 rounded-full bg-primary/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary">
+                            ★ Featured
+                          </span>
+                        ) : null}
+                        <div className="flex items-start gap-3">
+                          <ProductThumb src={product.imageUrl} alt={product.title} sizes="64px" className="w-16" />
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-sm font-medium">{product.title}</p>
+                            <AttributeChips attributes={product.attributes} className="mt-1" />
+                            <div className="mt-1 flex items-center justify-between">
+                              <span className="text-sm font-semibold">{formatPrice(product.priceInPaise)}</span>
+                              <span className="relative inline-flex h-4 items-center overflow-hidden text-xs text-muted">
+                                <AnimatePresence mode="popLayout" initial={false}>
+                                  <motion.span
+                                    key={product.availableStock}
+                                    initial={{ y: 10, opacity: 0 }}
+                                    animate={{ y: 0, opacity: 1 }}
+                                    exit={{ y: -10, opacity: 0 }}
+                                    transition={{ type: "spring", stiffness: 500, damping: 32 }}
+                                  >
+                                    {soldOut ? "Sold out" : `${product.availableStock} left`}
+                                  </motion.span>
+                                </AnimatePresence>
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <motion.button
+                          type="button"
+                          disabled={soldOut}
+                          onClick={() => onBuy(product)}
+                          whileTap={{ scale: 0.97 }}
+                          className="mt-3 w-full rounded-full bg-primary py-2 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary-hover disabled:bg-surface-2 disabled:text-faint"
+                        >
+                          {soldOut ? "Sold out" : "Buy Now"}
+                        </motion.button>
+                      </motion.div>
+                    );
+                  })}
+                </AnimatePresence>
+              )}
+            </div>
+          </motion.aside>
+        </>
+      ) : null}
+    </AnimatePresence>
   );
 }

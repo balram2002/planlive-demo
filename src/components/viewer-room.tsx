@@ -1,7 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import Image from "next/image";
 import Link from "next/link";
+import { AnimatePresence, motion } from "motion/react";
 import {
   LiveKitRoom,
   RoomAudioRenderer,
@@ -10,6 +12,7 @@ import {
   useConnectionState,
   useDataChannel,
   useIsMuted,
+  useLocalParticipant,
   useRoomContext,
   useTracks,
   type TrackReference,
@@ -32,6 +35,15 @@ import { FloatingReactions, useReactions } from "./reactions";
 import { LiveNotices, useLiveNotices } from "./live-notices";
 import { OrderCelebration, type Celebration } from "./order-celebration";
 import { ViewerCount } from "./viewer-count";
+import { ViewerMenu } from "./viewer-menu";
+import { ShareModal } from "./share-modal";
+import { StreamPlaceholder } from "./stream-placeholder";
+import { AttributeChips } from "@/components/products/attribute-chips";
+import { formatPrice } from "@/lib/format";
+import { headlineAttributes, type ProductAttribute } from "@/lib/product-attributes";
+import { isFollowing, setFollowing } from "@/lib/local-follow";
+import { haptics } from "@/lib/haptics";
+import { cn } from "@/lib/cn";
 
 export type ViewerProduct = {
   id: string;
@@ -39,6 +51,7 @@ export type ViewerProduct = {
   priceInPaise: number;
   availableStock: number;
   imageUrl: string | null;
+  attributes: ProductAttribute[];
 };
 
 const VIEWER_ROOM_OPTIONS: RoomOptions = {
@@ -49,10 +62,14 @@ const VIEWER_ROOM_OPTIONS: RoomOptions = {
 export function ViewerRoom({
   streamId,
   startedAt,
+  thumbnailUrl,
+  featuredProductId,
   initialProducts,
 }: {
   streamId: string;
   startedAt: string;
+  thumbnailUrl: string | null;
+  featuredProductId: string | null;
   initialProducts: ViewerProduct[];
 }) {
   const token = useLivekitToken(streamId);
@@ -74,7 +91,13 @@ export function ViewerRoom({
       options={VIEWER_ROOM_OPTIONS}
       className="flex min-h-0 flex-1 flex-col"
     >
-      <ViewerStage streamId={streamId} startedAt={startedAt} initialProducts={initialProducts} />
+      <ViewerStage
+        streamId={streamId}
+        startedAt={startedAt}
+        thumbnailUrl={thumbnailUrl}
+        initialFeaturedId={featuredProductId}
+        initialProducts={initialProducts}
+      />
     </LiveKitRoom>
   );
 }
@@ -96,8 +119,8 @@ function RemoteVideo({ trackRef }: { trackRef: TrackReference }) {
     <>
       <VideoTrack trackRef={trackRef} className="absolute inset-0 h-full w-full object-cover" />
       {cameraOff ? (
-        <div className="absolute inset-0 flex items-center justify-center bg-black/90 text-sm text-white/60">
-          Camera is off
+        <div className="absolute inset-0 bg-black/90">
+          <StreamPlaceholder state="camera-off" />
         </div>
       ) : null}
     </>
@@ -107,20 +130,31 @@ function RemoteVideo({ trackRef }: { trackRef: TrackReference }) {
 function ViewerStage({
   streamId,
   startedAt,
+  thumbnailUrl,
+  initialFeaturedId,
   initialProducts,
 }: {
   streamId: string;
   startedAt: string;
+  thumbnailUrl: string | null;
+  initialFeaturedId: string | null;
   initialProducts: ViewerProduct[];
 }) {
   const connectionState = useConnectionState();
   const room = useRoomContext();
+  const { localParticipant } = useLocalParticipant();
   const [products, setProducts] = useState<ViewerProduct[]>(initialProducts);
+  const [featuredId, setFeaturedId] = useState<string | null>(initialFeaturedId);
   const [panelOpen, setPanelOpen] = useState(false);
   const [buyFlow, setBuyFlow] = useState<BuyFlow | null>(null);
   const [audioMuted, setAudioMuted] = useState(false);
   const [videoHidden, setVideoHidden] = useState(false);
-  const [shareFlash, setShareFlash] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
+  // ViewerStage only ever mounts client-side (LiveKitRoom gates it behind an
+  // async token fetch, so this never runs during SSR) — safe to read
+  // localStorage directly in the initializer instead of syncing via effect.
+  const [following, setFollowingState] = useState(() => isFollowing(streamId));
+  const [followBusy, setFollowBusy] = useState(false);
 
   const { floats, remove, react } = useReactions();
   const { notices, push: pushNotice } = useLiveNotices();
@@ -138,6 +172,18 @@ function ViewerStage({
       room.off(RoomEvent.ParticipantConnected, onJoin);
     };
   }, [room, pushNotice]);
+
+  const refreshProducts = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/streams/${streamId}`);
+      if (!res.ok) return;
+      const json = await res.json();
+      setProducts(json.products);
+      setFeaturedId(json.stream.featuredProductId ?? null);
+    } catch {
+      // Transient — next broadcast will retry.
+    }
+  }, [streamId]);
 
   const onData = useCallback(
     (msg: { payload: Uint8Array; from?: { identity: string; name?: string } }) => {
@@ -163,7 +209,7 @@ function ViewerStage({
         return;
       }
 
-      // Server-sent packets only (no `from` — can't be forged by a participant).
+      // Server packets only — a client can't forge these (no `from`).
       if (data?.type === "order-celebration") {
         setCelebration({
           id: ++celebrationId.current,
@@ -176,9 +222,13 @@ function ViewerStage({
         setProducts((prev) =>
           prev.map((p) => (p.id === data.productId ? { ...p, availableStock: Number(data.availableStock) } : p)),
         );
+      } else if (data?.type === "products-changed") {
+        void refreshProducts();
+      } else if (data?.type === "featured") {
+        setFeaturedId(typeof data.productId === "string" ? data.productId : null);
       }
     },
-    [pushNotice],
+    [pushNotice, refreshProducts],
   );
   useDataChannel(onData);
 
@@ -186,26 +236,18 @@ function ViewerStage({
 
   const announceShare = useCallback(() => {
     const payload = new TextEncoder().encode(JSON.stringify({ type: "share" }));
-    room.localParticipant.publishData(payload, { reliable: false }).catch(() => {
-      // Best-effort — the share itself already happened.
-    });
-    pushNotice("share", room.localParticipant.name || "You");
-  }, [room, pushNotice]);
+    localParticipant.publishData(payload, { reliable: false }).catch(() => {});
+    pushNotice("share", localParticipant.name || "You");
+  }, [localParticipant, pushNotice]);
 
-  async function onShare() {
-    const url = typeof window !== "undefined" ? window.location.href : "";
-    try {
-      if (navigator.share) {
-        await navigator.share({ title: "Live on liveWAB", url });
-      } else {
-        await navigator.clipboard.writeText(url);
-        setShareFlash(true);
-        setTimeout(() => setShareFlash(false), 1500);
-      }
-      announceShare();
-    } catch {
-      // Cancelled share sheet, etc. — not an error.
-    }
+  function toggleFollow() {
+    haptics.tap();
+    setFollowBusy(true);
+    const next = !following;
+    setFollowingState(next);
+    setFollowing(streamId, next);
+    if (next) pushNotice("follow", localParticipant.name || "You");
+    setFollowBusy(false);
   }
 
   const remoteCamera = useTracks([Track.Source.Camera]).find((t) => !t.participant.isLocal);
@@ -222,6 +264,7 @@ function ViewerStage({
   }
 
   function startBuy(product: ViewerProduct) {
+    haptics.tap();
     setPanelOpen(false);
     setBuyFlow({ product });
   }
@@ -248,6 +291,8 @@ function ViewerStage({
     );
   }
 
+  const featuredProduct = featuredId ? (products.find((p) => p.id === featuredId) ?? null) : null;
+
   return (
     <div className="relative min-h-0 flex-1 overflow-hidden bg-black">
       <div className="absolute inset-0" onClick={onStageTap}>
@@ -259,52 +304,54 @@ function ViewerStage({
         ) : remoteCamera ? (
           <RemoteVideo trackRef={remoteCamera} />
         ) : (
-          <div className="flex h-full items-center justify-center text-sm text-white/60">
-            {connectionState === ConnectionState.Connected ? "Waiting for the seller's video…" : "Connecting…"}
-          </div>
+          <StreamPlaceholder state={connectionState !== ConnectionState.Connected ? "connecting" : "waiting"} waitingLabel="Starting soon" />
         )}
       </div>
 
       {!audioMuted ? <RoomAudioRenderer /> : null}
 
       {/* ---------- Header ---------- */}
-      <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex items-center justify-between gap-2 bg-gradient-to-b from-black/70 via-black/30 to-transparent p-3 pb-10">
-        <div className="pointer-events-auto flex items-center gap-1.5 rounded-full bg-black/50 px-2.5 py-1 backdrop-blur">
-          <span className="flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wide text-live">
-            <span className="h-1.5 w-1.5 rounded-full bg-live animate-live-pulse" />
-            Live
-          </span>
-          <Elapsed startedAt={startedAt} />
-        </div>
+      <div className="pointer-events-none absolute inset-x-0 top-0 z-20 bg-gradient-to-b from-black/70 via-black/30 to-transparent p-3 pb-10">
+        <div className="pointer-events-auto flex items-center gap-1.5">
+          <div className="flex min-w-0 items-center gap-1.5 rounded-full bg-black/50 py-1 pl-2.5 pr-1.5 backdrop-blur">
+            <span className="flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wide text-live">
+              <span className="h-1.5 w-1.5 rounded-full bg-live animate-live-pulse" />
+              Live
+            </span>
+            <Elapsed startedAt={startedAt} />
+            <motion.button
+              type="button"
+              disabled={followBusy}
+              onClick={toggleFollow}
+              whileTap={{ scale: 0.92 }}
+              className={cn(
+                "ml-1 shrink-0 rounded-full px-3 py-1 text-[11px] font-semibold transition-colors duration-300",
+                following ? "bg-white/15 text-white/80" : "bg-primary text-white",
+              )}
+            >
+              {following ? "Following" : "Follow"}
+            </motion.button>
+          </div>
 
-        <div className="pointer-events-auto flex shrink-0 items-center gap-1.5">
-          <ViewerCount />
-          <IconButton
-            onClick={() => setAudioMuted((v) => !v)}
-            active={audioMuted}
-            label={audioMuted ? "Unmute" : "Mute"}
-          >
-            {audioMuted ? <SpeakerOffIcon /> : <SpeakerOnIcon />}
-          </IconButton>
-          <IconButton
-            onClick={() => setVideoHidden((v) => !v)}
-            active={videoHidden}
-            label={videoHidden ? "Show video" : "Hide video"}
-          >
-            {videoHidden ? <EyeOffIcon /> : <EyeIcon />}
-          </IconButton>
-          <IconButton onClick={onShare} label="Share">
-            {shareFlash ? <CheckIcon /> : <ShareIcon />}
-          </IconButton>
-          <Link
-            href="/"
-            aria-label="Leave stream"
-            className="flex h-8 w-8 items-center justify-center rounded-full bg-black/60 text-white backdrop-blur transition-all duration-200 active:scale-90"
-          >
-            <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4" aria-hidden>
-              <path d="m6 6 12 12M18 6 6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-            </svg>
-          </Link>
+          <div className="ml-auto flex shrink-0 items-center gap-1.5">
+            <ViewerCount />
+            <ViewerMenu
+              audioMuted={audioMuted}
+              onToggleAudio={() => setAudioMuted((v) => !v)}
+              videoHidden={videoHidden}
+              onToggleVideo={() => setVideoHidden((v) => !v)}
+              onOpenShare={() => setShareOpen(true)}
+            />
+            <Link
+              href="/"
+              aria-label="Leave stream"
+              className="flex h-8 w-8 items-center justify-center rounded-full bg-black/60 text-white backdrop-blur transition-all duration-200 active:scale-90"
+            >
+              <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4" aria-hidden>
+                <path d="m6 6 12 12M18 6 6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+              </svg>
+            </Link>
+          </div>
         </div>
       </div>
 
@@ -317,16 +364,64 @@ function ViewerStage({
       <LiveNotices notices={notices} />
       <OrderCelebration celebration={celebration} onDone={clearCelebration} />
 
+      {/* ---------- Pinned product card ---------- */}
+      <AnimatePresence>
+        {featuredProduct ? (
+          <motion.div
+            key={featuredProduct.id}
+            initial={{ opacity: 0, x: 60, scale: 0.9 }}
+            animate={{ opacity: 1, x: 0, scale: 1 }}
+            exit={{ opacity: 0, x: 60, scale: 0.9 }}
+            transition={{ type: "spring", stiffness: 340, damping: 28 }}
+            className="absolute bottom-[calc(env(safe-area-inset-bottom)+4.75rem)] right-3 z-30 w-32"
+          >
+            <div className="overflow-hidden rounded-2xl border border-white/15 bg-black/70 backdrop-blur">
+              <div className="relative aspect-square w-full overflow-hidden bg-white/5">
+                {featuredProduct.imageUrl ? (
+                  <Image src={featuredProduct.imageUrl} alt={featuredProduct.title} fill sizes="128px" className="object-cover" />
+                ) : (
+                  <span className="flex h-full w-full items-center justify-center text-3xl">🏷️</span>
+                )}
+                <span className="absolute left-1.5 top-1.5 inline-flex items-center gap-1 rounded-full bg-black/65 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-white backdrop-blur">
+                  📌 Pinned
+                </span>
+              </div>
+              <div className="p-2.5">
+                <p className="line-clamp-2 text-xs font-medium leading-snug text-white">{featuredProduct.title}</p>
+                <p className="mt-0.5 text-xs font-bold text-white">{formatPrice(featuredProduct.priceInPaise)}</p>
+                <AttributeChips attributes={headlineAttributes(featuredProduct.attributes)} tone="dark" size="xs" className="mt-1" />
+                <p className="mt-0.5 text-[10px] text-white/60">
+                  {featuredProduct.availableStock > 0 ? `${featuredProduct.availableStock} left` : "Sold out"}
+                </p>
+                <motion.button
+                  type="button"
+                  disabled={featuredProduct.availableStock <= 0}
+                  onClick={() => startBuy(featuredProduct)}
+                  whileTap={{ scale: 0.95 }}
+                  className="mt-1.5 w-full rounded-full bg-primary py-1.5 text-[11px] font-bold text-white transition-colors disabled:bg-white/10 disabled:text-white/40"
+                >
+                  {featuredProduct.availableStock <= 0 ? "Sold out" : "Buy Now"}
+                </motion.button>
+              </div>
+            </div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+
       {/* ---------- Bottom dock ---------- */}
       <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-black/80 via-black/40 to-transparent px-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] pt-12">
         <ChatOverlay
           broadcasterIdentity={`seller_${streamId}`}
           className="pointer-events-auto w-full"
+          listClassName={featuredProduct ? "mr-32" : undefined}
           actions={
             <>
               <button
                 type="button"
-                onClick={() => setPanelOpen(true)}
+                onClick={() => {
+                  haptics.tap();
+                  setPanelOpen(true);
+                }}
                 aria-label={`See products (${products.length})`}
                 className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-white/15 bg-black/50 text-white backdrop-blur transition-all duration-200 active:scale-90"
               >
@@ -346,20 +441,41 @@ function ViewerStage({
                 ) : null}
               </button>
 
-              <button
+              <motion.button
                 type="button"
                 onClick={() => react("❤️")}
                 aria-label="Send a heart"
-                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-white/15 bg-black/50 text-lg backdrop-blur transition-transform active:scale-75"
+                whileTap={{ scale: 0.7 }}
+                transition={{ type: "spring", stiffness: 500, damping: 22 }}
+                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-white/15 bg-black/50 text-lg backdrop-blur"
               >
                 ❤️
-              </button>
+              </motion.button>
             </>
           }
         />
       </div>
 
-      <ProductsPanel open={panelOpen} onClose={() => setPanelOpen(false)} products={products} onBuy={startBuy} />
+      <ProductsPanel open={panelOpen} onClose={() => setPanelOpen(false)} products={products} featuredId={featuredId} onBuy={startBuy} />
+
+      <ShareModal
+        open={shareOpen}
+        onClose={() => {
+          setShareOpen(false);
+          announceShare();
+        }}
+        target={{
+          url: `/live/${streamId}`,
+          title: "Live on liveWAB",
+          description:
+            products.length > 0
+              ? `${products.length} ${products.length === 1 ? "product" : "products"} up for grabs — reserve instantly with Buy Now.`
+              : "Watch live and shop in real time.",
+          imageUrl: thumbnailUrl,
+          badge: "Live now",
+        }}
+      />
+
       <BuyDrawer
         flow={buyFlow}
         onClose={() => setBuyFlow(null)}
@@ -368,83 +484,6 @@ function ViewerStage({
         }
       />
     </div>
-  );
-}
-
-function IconButton({
-  children,
-  onClick,
-  label,
-  active = false,
-}: {
-  children: React.ReactNode;
-  onClick: () => void;
-  label: string;
-  active?: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-label={label}
-      className={`flex h-8 w-8 items-center justify-center rounded-full backdrop-blur transition-all duration-200 active:scale-90 ${
-        active ? "bg-live text-white" : "bg-black/60 text-white"
-      }`}
-    >
-      {children}
-    </button>
-  );
-}
-
-function SpeakerOnIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4" aria-hidden>
-      <path d="M4 9v6h4l5 4V5L8 9H4Z" fill="currentColor" />
-      <path d="M17 9a4 4 0 0 1 0 6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-    </svg>
-  );
-}
-function SpeakerOffIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4" aria-hidden>
-      <path d="M4 9v6h4l5 4V5L8 9H4Z" fill="currentColor" />
-      <path d="m16 9 5 6m0-6-5 6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-    </svg>
-  );
-}
-function EyeIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4" aria-hidden>
-      <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6Z" stroke="currentColor" strokeWidth="1.6" />
-      <circle cx="12" cy="12" r="2.5" fill="currentColor" />
-    </svg>
-  );
-}
-function EyeOffIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4" aria-hidden>
-      <path d="M3 3l18 18M10.6 5.2A10.6 10.6 0 0 1 12 5c6.5 0 10 6 10 6a13.4 13.4 0 0 1-3 3.6M7 7.3C4.2 9 2 12 2 12s3.5 6 10 6c1.3 0 2.5-.2 3.6-.6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-    </svg>
-  );
-}
-function ShareIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4" aria-hidden>
-      <path
-        d="M12 3v12m0-12 4 4m-4-4-4 4M6 13v6a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1v-6"
-        stroke="currentColor"
-        strokeWidth="1.6"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-function CheckIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4" aria-hidden>
-      <path d="M5 13l4 4L19 7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
   );
 }
 

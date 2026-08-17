@@ -2,50 +2,92 @@
 
 import { useRef, useState } from "react";
 import Image from "next/image";
+import { AnimatePresence, motion } from "motion/react";
+import { useToast } from "@/components/toast";
 import { downscaleImage } from "@/lib/downscale-image";
+import { haptics } from "@/lib/haptics";
 import { cn } from "@/lib/cn";
 
+type Kind = "thumbnail" | "product";
+type Aspect = "square" | "portrait" | "tile";
+
+const aspectClasses: Record<Aspect, string> = {
+  square: "h-24 w-24 rounded-full",
+  portrait: "aspect-[3/4] w-28 rounded-2xl",
+  tile: "aspect-square w-28 rounded-2xl",
+};
+
+type UploadState =
+  | { phase: "idle" }
+  | { phase: "uploading"; percent: number; etaLabel: string; speedLabel: string }
+  | { phase: "done" };
+
+function formatEta(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return "…";
+  if (seconds < 1) return "<1s left";
+  if (seconds < 60) return `${Math.ceil(seconds)}s left`;
+  const m = Math.floor(seconds / 60);
+  const s = Math.ceil(seconds % 60);
+  return `${m}m ${s}s left`;
+}
+
 /**
- * Direct-to-ImageKit (or local /api/upload fallback) image uploader with a
- * simple percent progress bar. Images are downscaled client-side first.
+ * Direct-to-ImageKit image uploader with live progress (percent, speed, ETA),
+ * cancel and change controls. Images are downscaled client-side first. Falls
+ * back to /api/upload when ImageKit isn't configured.
  */
 export function ImageUploader({
+  kind,
   value,
   onChange,
+  aspect = "tile",
   label,
+  maxWidth = 960,
 }: {
+  kind: Kind;
   value: string | null;
   onChange: (url: string | null) => void;
+  aspect?: Aspect;
   label: string;
+  maxWidth?: number;
 }) {
   const fileInput = useRef<HTMLInputElement>(null);
+  const xhrRef = useRef<XMLHttpRequest | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
-  const [percent, setPercent] = useState<number | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [state, setState] = useState<UploadState>({ phase: "idle" });
+  const { toast } = useToast();
 
   const shown = preview ?? value;
+
+  function cancel() {
+    haptics.tap();
+    xhrRef.current?.abort();
+    xhrRef.current = null;
+    setState({ phase: "idle" });
+    setPreview(null);
+  }
 
   async function onPick(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
-    setError(null);
 
     let blob: Blob;
     try {
-      blob = await downscaleImage(file);
+      blob = await downscaleImage(file, maxWidth);
     } catch {
-      setError("Couldn't read that image.");
+      toast({ title: "Couldn't read that image", variant: "error" });
       return;
     }
 
-    setPreview(URL.createObjectURL(blob));
+    const localUrl = URL.createObjectURL(blob);
+    setPreview(localUrl);
 
     let target:
       | { mode: "imagekit"; url: string; fields: Record<string, string> }
       | { mode: "local"; url: string };
     try {
-      const authRes = await fetch("/api/imagekit-auth");
+      const authRes = await fetch(`/api/imagekit-auth?kind=${kind}`);
       if (authRes.ok) {
         const auth = await authRes.json();
         target = {
@@ -57,15 +99,20 @@ export function ImageUploader({
             expire: String(auth.expire),
             token: auth.token,
             folder: auth.folder,
-            fileName: "product.jpg",
+            fileName: `${kind}.jpg`,
             useUniqueFileName: "true",
           },
         };
-      } else {
+      } else if (authRes.status === 503) {
         target = { mode: "local", url: "/api/upload" };
+      } else {
+        const body = await authRes.json().catch(() => ({}));
+        toast({ title: body.error ?? "Upload not allowed", variant: "error" });
+        setPreview(null);
+        return;
       }
     } catch {
-      setError("Network error.");
+      toast({ title: "Network error", variant: "error" });
       setPreview(null);
       return;
     }
@@ -77,94 +124,135 @@ export function ImageUploader({
     form.append("file", blob, "upload.jpg");
 
     const xhr = new XMLHttpRequest();
-    setPercent(0);
+    xhrRef.current = xhr;
+    const startedAt = Date.now();
+    setState({ phase: "uploading", percent: 0, etaLabel: "…", speedLabel: "" });
+
     xhr.upload.onprogress = (ev) => {
       if (!ev.lengthComputable) return;
-      setPercent(Math.round((ev.loaded / ev.total) * 100));
+      const elapsed = (Date.now() - startedAt) / 1000;
+      const speed = ev.loaded / Math.max(elapsed, 0.05);
+      const remaining = (ev.total - ev.loaded) / Math.max(speed, 1);
+      setState({
+        phase: "uploading",
+        percent: Math.round((ev.loaded / ev.total) * 100),
+        etaLabel: formatEta(remaining),
+        speedLabel: speed > 1024 * 1024 ? `${(speed / (1024 * 1024)).toFixed(1)} MB/s` : `${Math.max(1, Math.round(speed / 1024))} KB/s`,
+      });
     };
+
     xhr.onerror = () => {
-      setPercent(null);
+      xhrRef.current = null;
+      setState({ phase: "idle" });
       setPreview(null);
-      setError("Upload failed.");
+      toast({ title: "Upload failed", variant: "error" });
+    };
+    xhr.onabort = () => {
+      xhrRef.current = null;
     };
     xhr.onload = () => {
+      xhrRef.current = null;
       try {
         const res = JSON.parse(xhr.responseText);
         if (xhr.status >= 200 && xhr.status < 300 && res.url) {
-          setPercent(null);
+          setState({ phase: "done" });
           onChange(res.url);
+          haptics.success();
           return;
         }
-        throw new Error(res.error ?? "Upload failed");
+        throw new Error(res.message ?? res.error ?? "Upload failed");
       } catch (err) {
-        setPercent(null);
+        setState({ phase: "idle" });
         setPreview(null);
-        setError(err instanceof Error ? err.message : "Upload failed");
+        toast({ title: "Upload failed", description: err instanceof Error ? err.message : undefined, variant: "error" });
       }
     };
+
     xhr.open("POST", target.url);
     xhr.send(form);
   }
 
-  const uploading = percent !== null;
+  const uploading = state.phase === "uploading";
 
   return (
     <div>
       <p className="mb-1.5 text-sm font-medium text-muted">{label}</p>
-      <input
-        ref={fileInput}
-        type="file"
-        accept="image/jpeg,image/png,image/webp"
-        onChange={onPick}
-        className="hidden"
-      />
-      <div className="flex items-center gap-3">
+      <input ref={fileInput} type="file" accept="image/jpeg,image/png,image/webp" onChange={onPick} className="hidden" />
+
+      <div className="flex items-start gap-3">
         <button
           type="button"
           disabled={uploading}
           onClick={() => fileInput.current?.click()}
           className={cn(
-            "relative block aspect-square w-24 shrink-0 overflow-hidden rounded-2xl border border-dashed border-border bg-surface-2 transition-all duration-200 hover:border-primary/50 active:scale-[0.98]",
+            "relative block overflow-hidden border border-dashed border-border bg-surface-2 transition-all duration-200 hover:border-primary/50 active:scale-[0.98]",
+            aspectClasses[aspect],
           )}
         >
           {shown ? (
-            <Image
-              src={shown}
-              alt="Preview"
-              fill
-              unoptimized={shown.startsWith("blob:")}
-              sizes="96px"
-              className="object-cover"
-            />
+            <Image src={shown} alt="Preview" fill unoptimized={shown.startsWith("blob:")} sizes="112px" className="object-cover" />
           ) : (
             <span className="flex h-full flex-col items-center justify-center gap-1 text-xs text-faint">
               <span className="text-xl">🖼️</span>
               Add
             </span>
           )}
-          {uploading ? (
-            <span className="absolute inset-0 flex items-center justify-center bg-black/60 text-sm font-bold text-white">
-              {percent}%
-            </span>
-          ) : null}
+
+          <AnimatePresence>
+            {uploading ? (
+              <motion.span
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="absolute inset-0 flex flex-col items-center justify-center bg-black/60 text-white"
+              >
+                <span className="text-sm font-bold tabular-nums">{state.percent}%</span>
+              </motion.span>
+            ) : null}
+          </AnimatePresence>
         </button>
 
-        <div className="min-w-0 flex-1">
-          {shown && !uploading ? (
-            <button
-              type="button"
-              onClick={() => {
-                setPreview(null);
-                onChange(null);
-              }}
-              className="text-xs font-medium text-muted transition-colors hover:text-live"
-            >
-              Remove
-            </button>
-          ) : !uploading ? (
-            <p className="text-xs text-faint">JPEG, PNG or WebP.</p>
-          ) : null}
-          {error ? <p className="mt-1 text-xs text-live">{error}</p> : null}
+        <div className="min-w-0 flex-1 pt-1">
+          <AnimatePresence mode="wait" initial={false}>
+            {uploading ? (
+              <motion.div key="progress" initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface-2">
+                  <motion.div
+                    className="h-full rounded-full bg-primary"
+                    animate={{ width: `${state.percent}%` }}
+                    transition={{ ease: "easeOut", duration: 0.2 }}
+                  />
+                </div>
+                <p className="mt-1.5 text-xs tabular-nums text-muted">
+                  {state.percent}% · {state.etaLabel}
+                  {state.speedLabel ? ` · ${state.speedLabel}` : ""}
+                </p>
+                <button type="button" onClick={cancel} className="mt-1 text-xs font-medium text-live transition-opacity active:opacity-70">
+                  Cancel
+                </button>
+              </motion.div>
+            ) : shown ? (
+              <motion.div key="controls" initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="flex items-center gap-3">
+                <button type="button" onClick={() => fileInput.current?.click()} className="text-xs font-medium text-primary transition-opacity active:opacity-70">
+                  Change
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPreview(null);
+                    onChange(null);
+                  }}
+                  className="text-xs font-medium text-muted transition-colors hover:text-live"
+                >
+                  Remove
+                </button>
+              </motion.div>
+            ) : (
+              <motion.p key="hint" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="text-xs text-faint">
+                JPEG, PNG or WebP. Auto-optimized before upload.
+              </motion.p>
+            )}
+          </AnimatePresence>
         </div>
       </div>
     </div>

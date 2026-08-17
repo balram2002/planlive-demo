@@ -1,11 +1,24 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import Image from "next/image";
+import { useActionState, useEffect, useRef, useState } from "react";
 import { BroadcasterRoom } from "./broadcaster-room";
+import { LiveConsole } from "./live-console";
 import { ImageUploader } from "./image-uploader";
+import { AttributesEditor } from "./products/attributes-editor";
+import { Button } from "./ui/button";
+import { Spinner } from "./ui/action-button";
+import { EmptyState } from "./ui/empty-state";
+import { useToast } from "./toast";
 import { formatPrice } from "@/lib/format";
+import { haptics } from "@/lib/haptics";
 import { cn } from "@/lib/cn";
+import {
+  createProduct,
+  startStream,
+  endStream,
+  type ProductFormState,
+  type StartStreamState,
+} from "@/app/backstage-92k4x7/actions";
 
 const STORAGE_KEY = "livewab_demo_broadcast";
 
@@ -25,9 +38,6 @@ type Phase =
   | { kind: "blocked" } // someone else's stream is live, we hold no secret for it
   | { kind: "live"; streamId: string; secret: string; startedAt: string };
 
-/** The go-live funnel's order: pick products, then a category, then confirm. */
-type FunnelStep = "products" | "category" | "review";
-
 function loadStoredBroadcast(): { streamId: string; secret: string } | null {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -46,9 +56,9 @@ type AuthPhase = "checking" | "locked" | "unlocked";
 
 /**
  * Password gate wrapping the whole studio. The page also lives at an
- * unlinked-by-default URL, but that's only obscurity — every seller-only API
- * route independently checks the session cookie this gate sets, so the real
- * protection is the password, not the hidden path.
+ * unlinked-by-default URL, but that's only obscurity — every seller-only
+ * mutation independently checks the session cookie this gate sets, so the
+ * real protection is the password, not the hidden path.
  */
 export function SellerStudio() {
   const [authPhase, setAuthPhase] = useState<AuthPhase>("checking");
@@ -68,11 +78,9 @@ export function SellerStudio() {
   if (authPhase === "checking") {
     return <div className="skeleton mx-auto h-64 max-w-sm" />;
   }
-
   if (authPhase === "locked") {
     return <PasswordGate onUnlock={() => setAuthPhase("unlocked")} />;
   }
-
   return <SellerConsole onLocked={() => setAuthPhase("locked")} />;
 }
 
@@ -106,19 +114,12 @@ function PasswordGate({ onUnlock }: { onUnlock: () => void }) {
 
   return (
     <div className="flex min-h-[70vh] items-center justify-center px-4">
-      <form
-        onSubmit={submit}
-        className="w-full max-w-xs rounded-2xl border border-border bg-surface p-6 shadow-pop"
-      >
+      <form onSubmit={submit} className="w-full max-w-xs rounded-2xl border border-border bg-surface p-6 shadow-pop">
         <span className="mb-3 block text-2xl">🔒</span>
         <h1 className="mb-1 text-lg font-bold tracking-tight">Seller access</h1>
         <p className="mb-4 text-sm text-muted">Enter the password to continue.</p>
 
-        {error ? (
-          <p className="mb-3 rounded-xl bg-live/10 px-3 py-2 text-sm text-live">
-            {error}
-          </p>
-        ) : null}
+        {error ? <p className="mb-3 rounded-xl bg-live/10 px-3 py-2 text-sm text-live">{error}</p> : null}
 
         <input
           type="password"
@@ -141,41 +142,10 @@ function PasswordGate({ onUnlock }: { onUnlock: () => void }) {
   );
 }
 
-function StepDots({ step }: { step: FunnelStep }) {
-  const steps: FunnelStep[] = ["products", "category", "review"];
-  return (
-    <div className="mb-4 flex items-center gap-1.5">
-      {steps.map((s) => (
-        <span
-          key={s}
-          className={cn(
-            "h-1.5 flex-1 rounded-full transition-colors",
-            steps.indexOf(s) <= steps.indexOf(step) ? "bg-primary" : "bg-surface-2",
-          )}
-        />
-      ))}
-    </div>
-  );
-}
-
 function SellerConsole({ onLocked }: { onLocked: () => void }) {
   const [phase, setPhase] = useState<Phase>({ kind: "loading" });
-  const [step, setStep] = useState<FunnelStep>("products");
   const [products, setProducts] = useState<Product[] | null>(null);
   const [categories, setCategories] = useState<Category[] | null>(null);
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [categoryId, setCategoryId] = useState<string | null>(null);
-  const [streamTitle, setStreamTitle] = useState("");
-  const [starting, setStarting] = useState(false);
-  const [ending, setEnding] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  // Add-product form state.
-  const [newTitle, setNewTitle] = useState("");
-  const [newPrice, setNewPrice] = useState("");
-  const [newStock, setNewStock] = useState("1");
-  const [newImage, setNewImage] = useState<string | null>(null);
-  const [creating, setCreating] = useState(false);
 
   async function loadProducts() {
     const res = await fetch("/api/products");
@@ -196,12 +166,7 @@ function SellerConsole({ onLocked }: { onLocked: () => void }) {
       if (body.stream) {
         const stored = loadStoredBroadcast();
         if (stored && stored.streamId === body.stream.id) {
-          setPhase({
-            kind: "live",
-            streamId: body.stream.id,
-            secret: stored.secret,
-            startedAt: body.stream.startedAt,
-          });
+          setPhase({ kind: "live", streamId: body.stream.id, secret: stored.secret, startedAt: body.stream.startedAt });
           return;
         }
         setPhase({ kind: "blocked" });
@@ -217,128 +182,14 @@ function SellerConsole({ onLocked }: { onLocked: () => void }) {
     onLocked();
   }
 
-  async function createProduct(e: React.FormEvent) {
-    e.preventDefault();
-    setError(null);
-    const priceRupees = Number(newPrice);
-    const stock = Number(newStock);
-    if (newTitle.trim().length < 2) {
-      setError("Enter a product title.");
-      return;
-    }
-    if (!Number.isFinite(priceRupees) || priceRupees < 1) {
-      setError("Enter a valid price.");
-      return;
-    }
-    if (!Number.isInteger(stock) || stock < 0) {
-      setError("Enter a valid stock count.");
-      return;
-    }
-    if (!newImage) {
-      setError("Add a product photo.");
-      return;
-    }
-
-    setCreating(true);
-    try {
-      const res = await fetch("/api/products", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          title: newTitle,
-          priceInPaise: Math.round(priceRupees * 100),
-          availableStock: stock,
-          imageUrl: newImage,
-        }),
-      });
-      const body = await res.json();
-      if (!res.ok) {
-        setError(body.error ?? "Couldn't add product.");
-        return;
-      }
-      setProducts((prev) => [body.product, ...(prev ?? [])]);
-      setSelected((prev) => new Set(prev).add(body.product.id));
-      setNewTitle("");
-      setNewPrice("");
-      setNewStock("1");
-      setNewImage(null);
-    } finally {
-      setCreating(false);
-    }
-  }
-
-  function toggleSelected(id: string) {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }
-
-  async function goLive() {
-    setError(null);
-    if (selected.size === 0) {
-      setError("Pick at least one product to feature.");
-      return;
-    }
-    if (!categoryId) {
-      setError("Pick a category for your stream.");
-      return;
-    }
-    setStarting(true);
-    try {
-      const res = await fetch("/api/stream/start", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          productIds: [...selected],
-          categoryId,
-          title: streamTitle,
-        }),
-      });
-      const body = await res.json();
-      if (!res.ok) {
-        setError(body.error ?? "Couldn't start the stream.");
-        return;
-      }
-      localStorage.setItem(
-        STORAGE_KEY,
-        JSON.stringify({ streamId: body.streamId, secret: body.broadcastSecret }),
-      );
-      setPhase({
-        kind: "live",
-        streamId: body.streamId,
-        secret: body.broadcastSecret,
-        startedAt: new Date().toISOString(),
-      });
-    } finally {
-      setStarting(false);
-    }
-  }
-
-  async function endStream() {
-    if (phase.kind !== "live") return;
-    setEnding(true);
-    try {
-      await fetch("/api/stream/end", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          streamId: phase.streamId,
-          broadcastSecret: phase.secret,
-        }),
-      });
-      localStorage.removeItem(STORAGE_KEY);
-      setSelected(new Set());
-      setCategoryId(null);
-      setStreamTitle("");
-      setStep("products");
-      await Promise.all([loadProducts(), loadCategories()]);
-      setPhase({ kind: "setup" });
-    } finally {
-      setEnding(false);
-    }
+  async function endStreamAndReset(streamId: string, secret: string) {
+    const fd = new FormData();
+    fd.set("streamId", streamId);
+    fd.set("broadcastSecret", secret);
+    await endStream(fd);
+    localStorage.removeItem(STORAGE_KEY);
+    await Promise.all([loadProducts(), loadCategories()]);
+    setPhase({ kind: "setup" });
   }
 
   if (phase.kind === "loading") {
@@ -349,8 +200,7 @@ function SellerConsole({ onLocked }: { onLocked: () => void }) {
     return (
       <div className="mx-auto max-w-lg rounded-2xl border border-border bg-surface p-6 text-center">
         <p className="text-sm text-muted">
-          A stream is already live from another browser/session. End it there
-          first, or wait for it to finish.
+          A stream is already live from another browser/session. End it there first, or wait for it to finish.
         </p>
       </div>
     );
@@ -358,277 +208,259 @@ function SellerConsole({ onLocked }: { onLocked: () => void }) {
 
   if (phase.kind === "live") {
     return (
-      <div className="mx-auto max-w-lg">
-        <div className="mb-1 flex items-center justify-between">
-          <h1 className="text-2xl font-bold tracking-tight">You&apos;re live</h1>
-          <button
-            type="button"
-            onClick={logout}
-            className="text-xs font-medium text-muted transition-colors hover:text-foreground"
-          >
+      <div className="animate-page-in mx-auto max-w-5xl space-y-5 lg:grid lg:grid-cols-[minmax(0,420px)_1fr] lg:items-start lg:gap-6 lg:space-y-0">
+        <div className="lg:col-span-2 flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight">You&apos;re live</h1>
+            <p className="text-sm text-muted">Buyers can find your stream on Discover.</p>
+          </div>
+          <button type="button" onClick={logout} className="text-xs font-medium text-muted transition-colors hover:text-foreground">
             Lock
           </button>
         </div>
-        <p className="mb-4 text-sm text-muted">
-          Buyers can find your stream on Discover.
-        </p>
-        <BroadcasterRoom
-          streamId={phase.streamId}
-          broadcastSecret={phase.secret}
-          startedAt={phase.startedAt}
-        />
-        <button
-          type="button"
-          disabled={ending}
-          onClick={endStream}
-          className="mt-4 w-full rounded-full bg-live py-3 text-sm font-semibold text-white transition-all active:scale-[0.98] disabled:opacity-50"
-        >
-          {ending ? "Ending…" : "End stream"}
-        </button>
+
+        <div className="space-y-4">
+          <BroadcasterRoom streamId={phase.streamId} broadcastSecret={phase.secret} startedAt={phase.startedAt} />
+          <button
+            type="button"
+            onClick={() => {
+              haptics.impact();
+              void endStreamAndReset(phase.streamId, phase.secret);
+            }}
+            className="w-full rounded-full bg-live py-3 text-sm font-semibold text-white transition-all active:scale-[0.98]"
+          >
+            End stream
+          </button>
+        </div>
+
+        <LiveConsole streamId={phase.streamId} />
       </div>
     );
   }
 
-  // ---- setup phase: products -> category -> review ----
-  const selectedProducts = products?.filter((p) => selected.has(p.id)) ?? [];
-  const selectedCategory = categories?.find((c) => c.id === categoryId) ?? null;
-
+  // ---- setup phase ----
   return (
-    <div className="animate-page-in mx-auto max-w-lg">
-      <div className="mb-1 flex items-center justify-between">
-        <h1 className="text-2xl font-bold tracking-tight">Go live</h1>
-        <button
-          type="button"
-          onClick={logout}
-          className="text-xs font-medium text-muted transition-colors hover:text-foreground"
-        >
+    <div className="animate-page-in mx-auto max-w-lg space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Go live</h1>
+          <p className="text-sm text-muted">Add products, pick what you&apos;re selling, then start your broadcast.</p>
+        </div>
+        <button type="button" onClick={logout} className="text-xs font-medium text-muted transition-colors hover:text-foreground">
           Lock
         </button>
       </div>
-      <p className="mb-4 text-sm text-muted">
-        {step === "products"
-          ? "Step 1 — add products, pick what you're selling."
-          : step === "category"
-            ? "Step 2 — choose a category for the stream."
-            : "Step 3 — review and go live."}
-      </p>
 
-      <StepDots step={step} />
+      <AddProductCard onAdded={loadProducts} />
 
-      {error ? (
-        <p className="mb-4 rounded-xl bg-live/10 px-3 py-2 text-sm text-live">
-          {error}
-        </p>
-      ) : null}
-
-      {step === "products" ? (
-        <>
-          {/* Add product */}
-          <form
-            onSubmit={createProduct}
-            className="mb-6 space-y-3 rounded-2xl border border-border bg-surface p-4"
-          >
-            <h2 className="text-sm font-semibold">Add a product</h2>
-            <ImageUploader value={newImage} onChange={setNewImage} label="Photo" />
-            <input
-              type="text"
-              value={newTitle}
-              onChange={(e) => setNewTitle(e.target.value)}
-              placeholder="Product title"
-              className="w-full rounded-xl border border-border bg-surface-2 px-3 py-2.5 text-sm outline-none focus:border-primary/50"
-            />
-            <div className="flex gap-3">
-              <input
-                type="number"
-                inputMode="decimal"
-                min={1}
-                value={newPrice}
-                onChange={(e) => setNewPrice(e.target.value)}
-                placeholder="Price (₹)"
-                className="w-1/2 rounded-xl border border-border bg-surface-2 px-3 py-2.5 text-sm outline-none focus:border-primary/50"
-              />
-              <input
-                type="number"
-                inputMode="numeric"
-                min={0}
-                value={newStock}
-                onChange={(e) => setNewStock(e.target.value)}
-                placeholder="Stock"
-                className="w-1/2 rounded-xl border border-border bg-surface-2 px-3 py-2.5 text-sm outline-none focus:border-primary/50"
-              />
-            </div>
-            <button
-              type="submit"
-              disabled={creating}
-              className="w-full rounded-full bg-surface-2 py-2.5 text-sm font-semibold transition-all active:scale-[0.98] disabled:opacity-50"
-            >
-              {creating ? "Adding…" : "+ Add product"}
-            </button>
-          </form>
-
-          <h2 className="mb-2 text-sm font-semibold">Pick products for this stream</h2>
-          {products === null ? (
-            <div className="space-y-2">
-              <div className="skeleton h-16" />
-              <div className="skeleton h-16" />
-            </div>
-          ) : products.length === 0 ? (
-            <p className="mb-4 rounded-2xl border border-dashed border-border p-4 text-center text-sm text-muted">
-              Add your first product above.
-            </p>
-          ) : (
-            <div className="mb-4 space-y-2">
-              {products.map((p) => (
-                <button
-                  key={p.id}
-                  type="button"
-                  onClick={() => toggleSelected(p.id)}
-                  className={cn(
-                    "flex w-full items-center gap-3 rounded-2xl border p-3 text-left transition-all duration-200 active:scale-[0.99]",
-                    selected.has(p.id)
-                      ? "border-primary/60 bg-primary/5"
-                      : "border-border bg-surface",
-                  )}
-                >
-                  <span className="relative h-12 w-12 shrink-0 overflow-hidden rounded-xl bg-surface-2">
-                    {p.imageUrl ? (
-                      <Image src={p.imageUrl} alt={p.title} fill sizes="48px" className="object-cover" />
-                    ) : null}
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm font-medium">{p.title}</span>
-                    <span className="text-xs text-muted">
-                      {formatPrice(p.priceInPaise)} · {p.availableStock} in stock
-                    </span>
-                  </span>
-                  <span
-                    className={cn(
-                      "flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2",
-                      selected.has(p.id) ? "border-primary bg-primary" : "border-faint",
-                    )}
-                  >
-                    {selected.has(p.id) ? (
-                      <svg viewBox="0 0 24 24" fill="none" className="h-3 w-3">
-                        <path d="M5 13l4 4L19 7" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
-                      </svg>
-                    ) : null}
-                  </span>
-                </button>
-              ))}
-            </div>
-          )}
-
-          <button
-            type="button"
-            disabled={selected.size === 0}
-            onClick={() => {
-              setError(null);
-              setStep("category");
-            }}
-            className="w-full rounded-full bg-primary py-3 text-sm font-semibold text-primary-foreground transition-all active:scale-[0.98] disabled:opacity-40"
-          >
-            Next — choose category
-          </button>
-        </>
-      ) : step === "category" ? (
-        <>
-          <h2 className="mb-2 text-sm font-semibold">Category</h2>
-          {categories === null ? (
-            <div className="space-y-2">
-              <div className="skeleton h-12" />
-              <div className="skeleton h-12" />
-            </div>
-          ) : categories.length === 0 ? (
-            <p className="mb-4 rounded-2xl border border-dashed border-border p-4 text-center text-sm text-muted">
-              No categories configured yet.
-            </p>
-          ) : (
-            <div className="mb-6 space-y-2">
-              {categories.map((c) => (
-                <button
-                  key={c.id}
-                  type="button"
-                  onClick={() => setCategoryId(c.id)}
-                  className={cn(
-                    "flex w-full items-center gap-3 rounded-2xl border p-3 text-left transition-all duration-200 active:scale-[0.99]",
-                    categoryId === c.id
-                      ? "border-primary/60 bg-primary/5"
-                      : "border-border bg-surface",
-                  )}
-                >
-                  <span
-                    className={cn(
-                      "flex h-4 w-4 shrink-0 items-center justify-center rounded-full border-2",
-                      categoryId === c.id ? "border-primary" : "border-faint",
-                    )}
-                  >
-                    {categoryId === c.id ? <span className="h-2 w-2 rounded-full bg-primary" /> : null}
-                  </span>
-                  <span className="text-sm font-medium">{c.name}</span>
-                </button>
-              ))}
-            </div>
-          )}
-
-          <div className="flex gap-2.5">
-            <button
-              type="button"
-              onClick={() => setStep("products")}
-              className="w-1/3 rounded-full border border-border py-3 text-sm font-semibold transition-all hover:bg-surface-2 active:scale-[0.98]"
-            >
-              Back
-            </button>
-            <button
-              type="button"
-              disabled={!categoryId}
-              onClick={() => setStep("review")}
-              className="w-2/3 rounded-full bg-primary py-3 text-sm font-semibold text-primary-foreground transition-all active:scale-[0.98] disabled:opacity-40"
-            >
-              Next — review
-            </button>
-          </div>
-        </>
+      {products === null || categories === null ? (
+        <div className="space-y-2">
+          <div className="skeleton h-16" />
+          <div className="skeleton h-16" />
+        </div>
+      ) : products.length === 0 ? (
+        <EmptyState icon="📦" title="Add a product first" description="You need at least one product before you can go live." />
       ) : (
-        <>
-          <h2 className="mb-2 text-sm font-semibold">Review</h2>
-          <div className="mb-4 space-y-3 rounded-2xl border border-border bg-surface p-4">
-            <div>
-              <p className="text-xs font-medium text-muted">Products ({selectedProducts.length})</p>
-              <p className="text-sm">{selectedProducts.map((p) => p.title).join(", ")}</p>
-            </div>
-            <div>
-              <p className="text-xs font-medium text-muted">Category</p>
-              <p className="text-sm">{selectedCategory?.name}</p>
-            </div>
-          </div>
-
-          <input
-            type="text"
-            value={streamTitle}
-            onChange={(e) => setStreamTitle(e.target.value)}
-            placeholder="Stream title (optional)"
-            className="mb-4 w-full rounded-xl border border-border bg-surface-2 px-3 py-2.5 text-sm outline-none focus:border-primary/50"
-          />
-
-          <div className="flex gap-2.5">
-            <button
-              type="button"
-              onClick={() => setStep("category")}
-              className="w-1/3 rounded-full border border-border py-3 text-sm font-semibold transition-all hover:bg-surface-2 active:scale-[0.98]"
-            >
-              Back
-            </button>
-            <button
-              type="button"
-              disabled={starting}
-              onClick={goLive}
-              className="w-2/3 rounded-full bg-primary py-3 text-sm font-semibold text-primary-foreground transition-all active:scale-[0.98] disabled:opacity-40"
-            >
-              {starting ? "Starting…" : "Go live"}
-            </button>
-          </div>
-        </>
+        <GoLiveForm
+          products={products}
+          categories={categories}
+          onLive={(streamId, secret) => {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify({ streamId, secret }));
+            setPhase({ kind: "live", streamId, secret, startedAt: new Date().toISOString() });
+          }}
+        />
       )}
     </div>
+  );
+}
+
+function AddProductCard({ onAdded }: { onAdded: () => void }) {
+  const [state, formAction, pending] = useActionState<ProductFormState, FormData>(createProduct, {});
+  const [imageUrl, setImageUrl] = useState<string | null>(null);
+  const { toast } = useToast();
+  const handledSuccess = useRef<string | undefined>(undefined);
+
+  useEffect(() => {
+    if (state.error) toast({ title: state.error, variant: "error" });
+  }, [state.error, toast]);
+
+  useEffect(() => {
+    if (!state.success || state.success === handledSuccess.current) return;
+    handledSuccess.current = state.success;
+    toast({ title: state.success, variant: "success" });
+    setImageUrl(null);
+    onAdded();
+  }, [state.success, toast, onAdded]);
+
+  return (
+    <form action={formAction} className="space-y-3 rounded-2xl border border-border bg-surface p-4">
+      <h2 className="text-sm font-semibold">Add a product</h2>
+      <ImageUploader kind="product" value={imageUrl} onChange={setImageUrl} aspect="tile" label="Photo" />
+      <input type="hidden" name="imageUrl" value={imageUrl ?? ""} />
+      <input
+        name="title"
+        required
+        minLength={2}
+        maxLength={100}
+        placeholder="Product title"
+        className="w-full rounded-xl border border-border bg-surface-2 px-3 py-2.5 text-sm outline-none focus:border-primary/50"
+      />
+      <div className="flex gap-3">
+        <input
+          name="price"
+          type="number"
+          inputMode="decimal"
+          min={1}
+          step="0.01"
+          required
+          placeholder="Price (₹)"
+          className="w-1/2 rounded-xl border border-border bg-surface-2 px-3 py-2.5 text-sm outline-none focus:border-primary/50"
+        />
+        <input
+          name="stock"
+          type="number"
+          inputMode="numeric"
+          min={0}
+          step="1"
+          required
+          placeholder="Stock"
+          className="w-1/2 rounded-xl border border-border bg-surface-2 px-3 py-2.5 text-sm outline-none focus:border-primary/50"
+        />
+      </div>
+      <div className="rounded-2xl border border-border p-3">
+        <AttributesEditor compact />
+      </div>
+      <button
+        type="submit"
+        disabled={pending || !imageUrl}
+        className="w-full rounded-full bg-surface-2 py-2.5 text-sm font-semibold transition-all active:scale-[0.98] disabled:opacity-50"
+      >
+        {pending ? (
+          <span className="inline-flex items-center gap-2">
+            <Spinner /> Adding…
+          </span>
+        ) : !imageUrl ? (
+          "Add a photo to continue"
+        ) : (
+          "+ Add product"
+        )}
+      </button>
+    </form>
+  );
+}
+
+function GoLiveForm({
+  products,
+  categories,
+  onLive,
+}: {
+  products: Product[];
+  categories: Category[];
+  onLive: (streamId: string, secret: string) => void;
+}) {
+  const [state, formAction, pending] = useActionState<StartStreamState, FormData>(startStream, {});
+  const [thumbnailUrl, setThumbnailUrl] = useState<string | null>(null);
+  const { toast } = useToast();
+
+  useEffect(() => {
+    if (state.error) toast({ title: state.error, variant: "error" });
+  }, [state.error, toast]);
+
+  useEffect(() => {
+    if (state.streamId && state.broadcastSecret) {
+      onLive(state.streamId, state.broadcastSecret);
+    }
+    // Only fire once per successful start.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.streamId, state.broadcastSecret]);
+
+  return (
+    <form action={formAction} className="space-y-5">
+      <div>
+        <label htmlFor="live-title" className="mb-1.5 block text-sm font-medium text-muted">
+          Stream title <span className="font-normal text-faint">(optional)</span>
+        </label>
+        <input
+          id="live-title"
+          name="title"
+          maxLength={80}
+          placeholder="Friday drip drop 🔥"
+          className="w-full rounded-xl border border-border bg-surface-2 px-3.5 py-2.5 text-base text-foreground placeholder:text-faint focus:border-primary/60 focus:outline-none focus:ring-2 focus:ring-primary/30"
+        />
+      </div>
+
+      <ImageUploader kind="thumbnail" label="Stream cover (optional — falls back to the first product's photo)" value={thumbnailUrl} onChange={setThumbnailUrl} aspect="portrait" />
+      <input type="hidden" name="thumbnailUrl" value={thumbnailUrl ?? ""} />
+
+      <div>
+        <label htmlFor="live-category" className="mb-1.5 block text-sm font-medium text-muted">
+          Category (required)
+        </label>
+        <select
+          id="live-category"
+          name="categoryId"
+          required
+          defaultValue=""
+          className="w-full rounded-xl border border-border bg-surface-2 px-3.5 py-2.5 text-base text-foreground focus:border-primary/60 focus:outline-none focus:ring-2 focus:ring-primary/30"
+        >
+          <option value="" disabled>
+            What are you selling today?
+          </option>
+          {categories.map((category) => (
+            <option key={category.id} value={category.id}>
+              {category.name}
+            </option>
+          ))}
+        </select>
+        {categories.length === 0 ? (
+          <p className="mt-1.5 text-xs text-warning">No active categories configured.</p>
+        ) : null}
+      </div>
+
+      <fieldset className="space-y-2.5">
+        <legend className="mb-1 text-sm font-medium text-muted">Feature products in this stream</legend>
+        {products.map((product) => (
+          <label
+            key={product.id}
+            className="flex cursor-pointer items-center gap-3 rounded-2xl border border-border bg-surface p-3 transition-colors has-[:checked]:border-primary/60 has-[:checked]:bg-primary/5"
+          >
+            <input
+              type="checkbox"
+              name="productIds"
+              value={product.id}
+              defaultChecked={product.availableStock > 0}
+              className="h-4 w-4 shrink-0 accent-primary"
+            />
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-surface-2">🏷️</span>
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-sm font-medium">{product.title}</span>
+              <span className="text-xs text-muted">
+                {formatPrice(product.priceInPaise)} · {product.availableStock > 0 ? `${product.availableStock} in stock` : "sold out"}
+              </span>
+            </span>
+          </label>
+        ))}
+      </fieldset>
+
+      {state.error ? (
+        <p className="rounded-xl border border-live/30 bg-live/10 px-3 py-2 text-sm text-live">{state.error}</p>
+      ) : null}
+
+      <Button
+        type="submit"
+        size="lg"
+        disabled={pending || categories.length === 0}
+        className={cn("w-full")}
+        onClick={() => haptics.impact()}
+      >
+        {pending ? (
+          <span className="inline-flex items-center gap-2">
+            <Spinner /> Starting…
+          </span>
+        ) : (
+          "🔴 Go live"
+        )}
+      </Button>
+    </form>
   );
 }

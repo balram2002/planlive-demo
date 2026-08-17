@@ -1,21 +1,23 @@
 @import "tailwindcss";
 
 /* ------------------------------------------------------------------ */
-/* liveWAB-demo design tokens — trimmed copy of the main app's system. */
-/* Light theme only; no theme switching in this demo.                 */
+/* liveWAB design system (full port from planLive).                   */
+/* Light theme is the default; dark is applied via the `.dark` class   */
+/* set by next-themes (system option supported).                      */
 /* ------------------------------------------------------------------ */
 
 :root {
   --background: #f6f6f8;
   --surface: #ffffff;
   --surface-2: #f1f1f4;
+  --elevated: #ffffff;
   --border: #e5e5ea;
   --foreground: #17171c;
   --muted: #55555f;
   --faint: #9494a1;
 
-  --primary: #6d28d9;
-  --primary-hover: #5b21b6;
+  --primary: #e11d48;
+  --primary-hover: #be123c;
   --primary-foreground: #ffffff;
 
   --live: #dc2626;
@@ -26,10 +28,44 @@
   --shadow-pop: 0 4px 12px rgb(23 23 28 / 0.08), 0 12px 32px rgb(23 23 28 / 0.12);
 }
 
+.dark {
+  --background: #0a0a0c;
+  --surface: #141418;
+  --surface-2: #1c1c22;
+  --elevated: #232329;
+  --border: #2a2a31;
+  --foreground: #fafafa;
+  --muted: #a1a1aa;
+  --faint: #71717a;
+
+  --primary: #f43f5e;
+  --primary-hover: #e11d48;
+  --primary-foreground: #ffffff;
+
+  --live: #ef4444;
+  --success: #22c55e;
+  --warning: #f59e0b;
+
+  --shadow-card: 0 0 0 1px rgb(255 255 255 / 0.02);
+  --shadow-pop: 0 8px 32px rgb(0 0 0 / 0.55);
+}
+
+/* Seller area runs violet — an obvious-at-a-glance signal for which surface
+   you're on. Applied via `.theme-seller` on the studio page. */
+.theme-seller {
+  --primary: #6d28d9;
+  --primary-hover: #5b21b6;
+}
+.dark .theme-seller {
+  --primary: #8b5cf6;
+  --primary-hover: #7c3aed;
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-surface: var(--surface);
   --color-surface-2: var(--surface-2);
+  --color-elevated: var(--elevated);
   --color-border: var(--border);
   --color-foreground: var(--foreground);
   --color-muted: var(--muted);
@@ -49,6 +85,11 @@
 
 html {
   -webkit-text-size-adjust: 100%;
+}
+html.dark {
+  color-scheme: dark;
+}
+html:not(.dark) {
   color-scheme: light;
 }
 
@@ -59,13 +100,21 @@ body {
   overscroll-behavior-y: contain;
   -webkit-tap-highlight-color: transparent;
   overflow-x: clip;
+  transition:
+    background-color 0.25s ease,
+    color 0.25s ease;
 }
 
 img,
 svg,
 video,
-canvas {
+canvas,
+iframe {
   max-width: 100%;
+}
+
+:where(td, dd, p, li, span, h1, h2, h3, h4) {
+  overflow-wrap: anywhere;
 }
 
 .no-scrollbar {
@@ -75,6 +124,10 @@ canvas {
 .no-scrollbar::-webkit-scrollbar {
   display: none;
 }
+
+/* ------------------------------------------------------------------ */
+/* Motion vocabulary.                                                  */
+/* ------------------------------------------------------------------ */
 
 @keyframes page-in {
   from {
@@ -90,6 +143,20 @@ canvas {
   animation: page-in 0.35s cubic-bezier(0.21, 1.02, 0.73, 1) both;
 }
 
+@keyframes item-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+.animate-item-in {
+  animation: item-in 0.3s cubic-bezier(0.21, 1.02, 0.73, 1) both;
+}
+
 @keyframes shimmer {
   from {
     background-position: 200% 0;
@@ -100,14 +167,36 @@ canvas {
 }
 .skeleton {
   border-radius: 0.75rem;
-  background: linear-gradient(
-    100deg,
-    var(--surface-2) 40%,
-    var(--border) 50%,
-    var(--surface-2) 60%
-  );
+  background: linear-gradient(100deg, var(--surface-2) 40%, var(--border) 50%, var(--surface-2) 60%);
   background-size: 200% 100%;
   animation: shimmer 1.6s linear infinite;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(-12px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+@keyframes toast-out {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.97);
+  }
+}
+.animate-toast-in {
+  animation: toast-in 0.28s cubic-bezier(0.21, 1.02, 0.73, 1) both;
+}
+.animate-toast-out {
+  animation: toast-out 0.25s ease-in both;
 }
 
 @keyframes live-pulse {
@@ -126,7 +215,11 @@ canvas {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .animate-page-in {
+  .animate-page-in,
+  .animate-item-in {
     animation: none;
+  }
+  body {
+    transition: none;
   }
 }

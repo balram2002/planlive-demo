@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { cn } from "@/lib/cn";
 
-export type NoticeKind = "join" | "like" | "share";
+export type NoticeKind = "join" | "like" | "share" | "follow";
 
 export type Notice = {
   id: number;
@@ -33,6 +33,12 @@ const copy: Record<NoticeKind, { emoji: string; verb: string; ring: string; glow
     verb: "shared the stream",
     ring: "border-sky-400/40",
     glow: "shadow-[0_0_18px_-6px_rgba(56,189,248,0.7)]",
+  },
+  follow: {
+    emoji: "⭐",
+    verb: "followed",
+    ring: "border-amber-300/45",
+    glow: "shadow-[0_0_18px_-6px_rgba(252,211,77,0.75)]",
   },
 };
 

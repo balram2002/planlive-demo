@@ -18,6 +18,10 @@ model Product {
   availableStock Int
   imageUrl       String?
   streamId       String?  @db.ObjectId
+  /// Which attribute preset the seller filled in ("clothing", "footwear"…).
+  productType    String?
+  /// Buyer-facing specifics as an ordered JSON array of {label, value}.
+  attributesJson String?
   createdAt      DateTime @default(now())
 }
 
@@ -26,15 +30,17 @@ model Product {
 /// that tells the token endpoint "this caller is the broadcaster", since
 /// there's no auth to check a seller id against.
 model Stream {
-  id              String       @id @default(auto()) @map("_id") @db.ObjectId
-  livekitRoomName String       @unique
-  broadcastSecret String
-  status          StreamStatus @default(LIVE)
-  title           String?
-  thumbnailUrl    String?
-  categoryId      String       @db.ObjectId
-  startedAt       DateTime     @default(now())
-  endedAt         DateTime?
+  id                String       @id @default(auto()) @map("_id") @db.ObjectId
+  livekitRoomName   String       @unique
+  broadcastSecret   String
+  status            StreamStatus @default(LIVE)
+  title             String?
+  thumbnailUrl      String?
+  categoryId        String       @db.ObjectId
+  /// The "currently featured" product pinned in the viewer's live-room card.
+  featuredProductId String?      @db.ObjectId
+  startedAt         DateTime     @default(now())
+  endedAt           DateTime?
 }
 
 enum StreamStatus {

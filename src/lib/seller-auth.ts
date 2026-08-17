@@ -1,5 +1,6 @@
-// No "server-only" guard — imported from route handlers only.
+// No "server-only" guard — imported from route handlers and server actions.
 import crypto from "node:crypto";
+import { cookies } from "next/headers";
 import type { NextRequest } from "next/server";
 
 const SELLER_PASSWORD = process.env.SELLER_PASSWORD ?? "";
@@ -48,4 +49,17 @@ export function verifySessionCookieValue(value: string | undefined | null): bool
 /** True when the request carries a valid, unexpired seller session cookie. */
 export function isSellerRequest(req: NextRequest): boolean {
   return verifySessionCookieValue(req.cookies.get(SELLER_COOKIE)?.value);
+}
+
+/**
+ * For Server Actions, which read the request's cookies via next/headers
+ * rather than a NextRequest. Throws so every action fails loudly and
+ * uniformly on an invalid/expired/missing session — there's no page to
+ * redirect back to from inside an action.
+ */
+export async function requireSellerSession(): Promise<void> {
+  const store = await cookies();
+  if (!verifySessionCookieValue(store.get(SELLER_COOKIE)?.value)) {
+    throw new Error("Not authorized.");
+  }
 }

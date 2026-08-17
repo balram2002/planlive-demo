@@ -1,12 +1,11 @@
-import { NextResponse, type NextRequest } from "next/server";
+import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { isSellerRequest } from "@/lib/seller-auth";
 
-/** GET /api/categories — active categories for the go-live funnel. Seller-only. */
-export async function GET(req: NextRequest) {
-  if (!isSellerRequest(req)) {
-    return NextResponse.json({ error: "Not authorized." }, { status: 401 });
-  }
+/**
+ * GET /api/categories — active categories. Public: the discover page's
+ * category rail needs these too, and category names aren't sensitive.
+ */
+export async function GET() {
   const categories = await prisma.category.findMany({
     where: { isActive: true },
     orderBy: { name: "asc" },

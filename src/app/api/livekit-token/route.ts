@@ -7,9 +7,10 @@ import { createAccessToken, livekitConfigured, LIVEKIT_URL } from "@/lib/livekit
  * GET /api/livekit-token?streamId=...&secret=...
  *
  * Mints a LiveKit token for the room. `secret` is the stream's
- * broadcastSecret (only the seller's browser has it, from /api/stream/start)
- * — matching it is what grants publish rights. Everyone else, including a
- * missing/wrong secret, joins as a subscribe-only guest.
+ * broadcastSecret (only the seller's browser has it, handed back by the
+ * startStream server action) — matching it is what grants publish rights.
+ * Everyone else, including a missing/wrong secret, joins as a
+ * subscribe-only guest.
  */
 export async function GET(req: NextRequest) {
   if (!livekitConfigured()) {

@@ -10,7 +10,7 @@ export const metadata = {
 
 export default function SellerPage() {
   return (
-    <main className="min-h-screen px-4 py-6 pb-16">
+    <main className="theme-seller min-h-screen px-4 py-6 pb-16">
       <SellerStudio />
     </main>
   );

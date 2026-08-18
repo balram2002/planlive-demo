@@ -13,13 +13,19 @@ import {
   useTracks,
 } from "@livekit/components-react";
 import {
+  AudioPresets,
   ConnectionState,
   RoomEvent,
   Track,
   VideoPresets,
+  type AudioCaptureOptions,
+  type LocalVideoTrack,
   type RemoteParticipant,
   type RoomOptions,
+  type TrackPublishDefaults,
+  type VideoCaptureOptions,
 } from "livekit-client";
+import { motion } from "motion/react";
 import { useLivekitToken } from "./use-livekit-token";
 import { Elapsed } from "./elapsed";
 import { ChatOverlay } from "./chat";
@@ -29,18 +35,49 @@ import { OrderCelebration, type Celebration } from "./order-celebration";
 import { ViewerCount } from "./viewer-count";
 import { LiveAddProduct } from "./live-add-product";
 import { cn } from "@/lib/cn";
+import { haptics } from "@/lib/haptics";
+
+/**
+ * Broadcast quality: hard 720p floor, up to 4K ceiling. Ported verbatim from
+ * planLive — see that project's broadcaster-room.tsx for the full rationale
+ * (simulcast layer math, why H.264, why degradationPreference "balanced").
+ */
+const CAPTURE_OPTIONS: VideoCaptureOptions = {
+  resolution: VideoPresets.h2160.resolution,
+  facingMode: "user",
+};
+
+const AUDIO_CAPTURE_OPTIONS: AudioCaptureOptions = {
+  autoGainControl: false,
+  echoCancellation: false,
+  noiseSuppression: false,
+  channelCount: 2,
+  sampleRate: 48_000,
+};
+
+const PUBLISH_DEFAULTS: TrackPublishDefaults = {
+  simulcast: true,
+  videoSimulcastLayers: [VideoPresets.h720, VideoPresets.h1080],
+  videoEncoding: {
+    maxBitrate: 16_000_000,
+    maxFramerate: 30,
+    priority: "high",
+  },
+  degradationPreference: "balanced",
+  videoCodec: "h264",
+  audioPreset: AudioPresets.musicHighQualityStereo,
+  dtx: false,
+  red: false,
+};
 
 const ROOM_OPTIONS: RoomOptions = {
   dynacast: true,
-  videoCaptureDefaults: { resolution: VideoPresets.h1080.resolution },
-  publishDefaults: {
-    simulcast: true,
-    videoSimulcastLayers: [VideoPresets.h360, VideoPresets.h720],
-    videoCodec: "h264",
-  },
+  videoCaptureDefaults: CAPTURE_OPTIONS,
+  audioCaptureDefaults: AUDIO_CAPTURE_OPTIONS,
+  publishDefaults: PUBLISH_DEFAULTS,
 };
 
-/** Seller's broadcast surface: local camera preview, chat/reactions/notices/celebration same as the buyer sees, camera/mic toggles. */
+/** Seller's broadcast surface: local camera preview, chat/reactions/notices/celebration same as the buyer sees, camera/flip/mic toggles. */
 export function BroadcasterRoom({
   streamId,
   broadcastSecret,
@@ -67,8 +104,8 @@ export function BroadcasterRoom({
       token={token.token}
       serverUrl={token.serverUrl}
       connect
-      video
-      audio
+      video={CAPTURE_OPTIONS}
+      audio={AUDIO_CAPTURE_OPTIONS}
       options={ROOM_OPTIONS}
       className="block"
     >
@@ -78,6 +115,7 @@ export function BroadcasterRoom({
   );
 }
 
+/** Circular device toggle: white when live, red with a slash when off. */
 function DeviceToggle({
   source,
   onIcon,
@@ -92,19 +130,78 @@ function DeviceToggle({
   const { enabled, pending, toggle } = useTrackToggle({ source });
   return (
     <div className="flex flex-col items-center gap-1">
-      <button
+      <motion.button
         type="button"
-        onClick={() => void toggle()}
+        onClick={() => {
+          haptics.tap();
+          void toggle();
+        }}
         disabled={pending}
+        aria-label={`${enabled ? "Turn off" : "Turn on"} ${label}`}
         aria-pressed={enabled}
+        whileTap={{ scale: 0.88 }}
+        transition={{ type: "spring", stiffness: 500, damping: 26 }}
         className={cn(
           "flex h-12 w-12 items-center justify-center rounded-full backdrop-blur transition-colors duration-200 disabled:opacity-50",
-          enabled ? "bg-white text-black" : "bg-live text-white",
+          enabled ? "bg-white text-black" : "bg-live text-white shadow-[0_0_16px_rgb(220_38_38/0.5)]",
         )}
       >
         {enabled ? onIcon : offIcon}
-      </button>
+      </motion.button>
       <span className="text-[10px] font-medium text-white/70">{label}</span>
+    </div>
+  );
+}
+
+/** Front ↔ rear camera switch with a Y-axis flip animation. */
+function FlipCameraButton() {
+  const { localParticipant } = useLocalParticipant();
+  const [facing, setFacing] = useState<"user" | "environment">("user");
+  const [busy, setBusy] = useState(false);
+
+  async function flip() {
+    haptics.tap();
+    const track = localParticipant.getTrackPublication(Track.Source.Camera)?.track as
+      | LocalVideoTrack
+      | undefined;
+    if (!track || busy) return;
+    setBusy(true);
+    const next = facing === "user" ? "environment" : "user";
+    try {
+      // Re-assert the capture constraint — restartTrack without it would
+      // fall back to the browser's default (often much lower) capture size.
+      await track.restartTrack({ ...CAPTURE_OPTIONS, facingMode: next });
+      setFacing(next);
+    } catch {
+      // Device may have a single camera — keep current facing.
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col items-center gap-1">
+      <motion.button
+        type="button"
+        onClick={flip}
+        disabled={busy}
+        aria-label={`Switch to ${facing === "user" ? "rear" : "front"} camera`}
+        whileTap={{ scale: 0.88 }}
+        animate={{ rotateY: facing === "user" ? 0 : 180 }}
+        transition={{ type: "spring", stiffness: 300, damping: 24 }}
+        className="flex h-12 w-12 items-center justify-center rounded-full bg-white/15 text-white backdrop-blur transition-colors duration-200 hover:bg-white/25 disabled:opacity-50"
+      >
+        <svg viewBox="0 0 24 24" fill="none" className="h-5 w-5" aria-hidden>
+          <path
+            d="M4 9a8 8 0 0 1 14-3.5M20 15a8 8 0 0 1-14 3.5"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+          />
+          <path d="M18 2v4h-4M6 22v-4h4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </motion.button>
+      <span className="text-[10px] font-medium text-white/70">Flip</span>
     </div>
   );
 }
@@ -213,6 +310,7 @@ function BroadcasterStage({ streamId, startedAt }: { streamId: string; startedAt
 
       <div className="absolute inset-x-0 bottom-0 flex items-center justify-center gap-6 bg-gradient-to-t from-black/80 to-transparent px-4 pb-4 pt-12">
         <DeviceToggle source={Track.Source.Camera} label="Camera" onIcon={<CameraIcon />} offIcon={<CameraOffIcon />} />
+        <FlipCameraButton />
         <DeviceToggle source={Track.Source.Microphone} label="Mic" onIcon={<MicIcon />} offIcon={<MicOffIcon />} />
       </div>
     </div>

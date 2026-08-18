@@ -48,7 +48,7 @@ export default async function LiveStreamPage({
 
   if (stream.status !== "LIVE") {
     return (
-      <div className="flex min-h-screen flex-col items-center justify-center gap-3 px-6 text-center">
+      <div className="flex h-dvh flex-col items-center justify-center gap-3 px-6 text-center">
         <span className="text-3xl">🌙</span>
         <h1 className="text-xl font-semibold">This stream has ended</h1>
         <p className="text-sm text-muted">
@@ -70,7 +70,7 @@ export default async function LiveStreamPage({
   });
 
   return (
-    <div className="flex min-h-screen flex-1 flex-col">
+    <div className="flex h-dvh flex-col overflow-hidden">
       <ViewerRoom
         streamId={stream.id}
         startedAt={stream.startedAt.toISOString()}
